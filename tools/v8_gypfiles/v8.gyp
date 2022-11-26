@@ -542,6 +542,18 @@
             'sources': [
               '<!@pymod_do_main(GN-scraper "<(V8_ROOT)/BUILD.gn"  "v8_header_set.\\"v8_internal_headers\\".*?v8_enable_maglev.*?sources \\+= ")',
             ],
+            'conditions': [
+              ['v8_target_arch=="arm64"', {
+                'sources': [
+                  '<!@pymod_do_main(GN-scraper "<(V8_ROOT)/BUILD.gn"  "v8_header_set.\\"v8_internal_headers\\".*?v8_enable_maglev.*?v8_current_cpu == \\"arm64\\".*?sources \\+= ")',
+                ],
+              }],
+              ['v8_target_arch=="x64"', {
+                'sources': [
+                  '<!@pymod_do_main(GN-scraper "<(V8_ROOT)/BUILD.gn"  "v8_header_set.\\"v8_internal_headers\\".*?v8_enable_maglev.*?v8_current_cpu == \\"x64\\".*?sources \\+= ")',
+                ],
+              }],
+            ],
           }],
           ['v8_enable_webassembly==1', {
             'sources': [
@@ -795,6 +807,18 @@
         ['v8_enable_maglev==1', {
           'sources': [
             '<!@pymod_do_main(GN-scraper "<(V8_ROOT)/BUILD.gn"  "\\"v8_base_without_compiler.*?v8_enable_maglev.*?sources \\+= ")',
+          ],
+          'conditions': [
+            ['v8_target_arch=="arm64"', {
+              'sources': [
+                '<!@pymod_do_main(GN-scraper "<(V8_ROOT)/BUILD.gn"  "v8_base_without_compiler.*?v8_enable_maglev.*?v8_current_cpu == \\"arm64\\".*?sources \\+= ")',
+              ],
+            }],
+            ['v8_target_arch=="x64"', {
+              'sources': [
+                '<!@pymod_do_main(GN-scraper "<(V8_ROOT)/BUILD.gn"  "v8_base_without_compiler.*?v8_enable_maglev.*?v8_current_cpu == \\"x64\\".*?sources \\+= ")',
+              ],
+            }],
           ],
         }],
         ['v8_enable_webassembly==1', {
