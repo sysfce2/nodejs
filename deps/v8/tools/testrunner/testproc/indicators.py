@@ -24,7 +24,7 @@ def print_failure_header(test, is_flaky=False):
   print(output.encode(encoding, errors='replace').decode(encoding))
 
 
-def formatted_result_output(result):
+def formatted_result_output(result, relative=False):
   lines = []
   if result.output.stderr:
     lines.append("--- stderr ---")
@@ -32,7 +32,7 @@ def formatted_result_output(result):
   if result.output.stdout:
     lines.append("--- stdout ---")
     lines.append(result.output.stdout.strip())
-  lines.append("Command: %s" % result.cmd.to_string())
+  lines.append("Command: %s" % result.cmd.to_string(relative))
   if result.output.HasCrashed():
     lines.append("exit code: %s" % result.output.exit_code_string)
     lines.append("--- CRASHED ---")
@@ -344,6 +344,26 @@ class MonochromeProgressIndicator(CompactProgressIndicator):
     print(("\r" + (" " * last_length) + "\r"), end='')
 
 
+class CrashInfo:
+  """Parsed crash information."""
+
+  def __init__(self):
+    self.crash_stacktrace = ''
+    self.crash_type = 'Dummy Type'
+    self.crash_state = 'Dummy State'
+
+
+class StackParser:
+  """Stack parser."""
+
+  def parse(self, stacktrace: str) -> CrashInfo:
+    """Parse a stacktrace."""
+    state = CrashInfo()
+    state.crash_stacktrace = stacktrace
+
+    return state
+
+
 class JsonTestProgressIndicator(ProgressIndicator):
 
   def __init__(self, context, options, test_count, framework_name):
@@ -385,6 +405,14 @@ class JsonTestProgressIndicator(ProgressIndicator):
           "stderr": output.stderr,
           "error_details": result.error_details,
       })
+
+      stack_parser = StackParser()
+      stderr_analysis = stack_parser.parse(output.stderr)
+      record.update({
+          "crash_state": stderr_analysis.crash_state,
+          "crash_type": stderr_analysis.crash_type,
+      })
+
       self.results.append(record)
 
   def _buffer_slow_tests(self, test, result, output, run):

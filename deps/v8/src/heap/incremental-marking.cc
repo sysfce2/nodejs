@@ -310,6 +310,10 @@ void IncrementalMarking::StartMarkingMajor() {
 
   heap_->InvokeIncrementalMarkingPrologueCallbacks();
 
+  // Temporary checks for diagnosing https://crbug.com/1380114.
+  heap_->isolate()->traced_handles()->CheckNodeMarkingStateIsConsistent(
+      false, &MarkCompactCollector::IsUnmarkedHeapObject);
+
   is_compacting_ = major_collector_->StartCompaction(
       MarkCompactCollector::StartCompactionMode::kIncremental);
 
@@ -323,7 +327,8 @@ void IncrementalMarking::StartMarkingMajor() {
              GCTracer::Scope::MC_INCREMENTAL_EMBEDDER_PROLOGUE);
     // PrepareForTrace should be called before visitor initialization in
     // StartMarking. It is only used with CppHeap.
-    heap_->local_embedder_heap_tracer()->PrepareForTrace(embedder_flags);
+    heap_->local_embedder_heap_tracer()->PrepareForTrace(
+        embedder_flags, LocalEmbedderHeapTracer::CollectionType::kMajor);
   }
 
   major_collector_->StartMarking();
@@ -489,7 +494,7 @@ void IncrementalMarking::UpdateMarkingWorklistAfterYoungGenGC() {
         // Hence, we can discard them.
         return false;
       }
-      HeapObject dest = map_word.ToForwardingAddress();
+      HeapObject dest = map_word.ToForwardingAddress(obj);
       USE(this);
       DCHECK_IMPLIES(marking_state->IsWhite(obj), obj.IsFreeSpaceOrFiller());
       if (dest.InSharedHeap()) {

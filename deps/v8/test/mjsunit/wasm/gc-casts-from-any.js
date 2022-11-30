@@ -8,9 +8,11 @@ d8.file.execute('test/mjsunit/wasm/wasm-module-builder.js');
 
 (function TestRefTest() {
   var builder = new WasmModuleBuilder();
+  builder.startRecGroup();
   let structSuper = builder.addStruct([makeField(kWasmI32, true)]);
   let structSub = builder.addStruct([makeField(kWasmI32, true)], structSuper);
   let array = builder.addArray(kWasmI32);
+  builder.endRecGroup();
 
   let fct =
   builder.addFunction('createStructSuper',
@@ -47,6 +49,7 @@ d8.file.execute('test/mjsunit/wasm/wasm-module-builder.js');
     ["Eq", kEqRefCode],
     // 'ref.test any' is semantically the same as '!ref.is_null' here.
     ["Any", kAnyRefCode],
+    ["None", kNullRefCode]
   ].forEach(([typeName, typeCode]) => {
     builder.addFunction(`refTest${typeName}`,
                         makeSig([kWasmExternRef], [kWasmI32, kWasmI32]))
@@ -153,6 +156,15 @@ d8.file.execute('test/mjsunit/wasm/wasm-module-builder.js');
   assertEquals([1, 1], wasm.refTestAny(1)); // ref.i31
   assertEquals([1, 1], wasm.refTestAny({'JavaScript': 'Object'}));
 
+  assertEquals([0, 1], wasm.refTestNone(null));
+  assertEquals([0, 0], wasm.refTestNone(undefined));
+  assertEquals([0, 0], wasm.refTestNone(wasm.createStructSuper()));
+  assertEquals([0, 0], wasm.refTestNone(wasm.createStructSub()));
+  assertEquals([0, 0], wasm.refTestNone(wasm.createArray()));
+  assertEquals([0, 0], wasm.refTestNone(wasm.createFuncRef()));
+  assertEquals([0, 0], wasm.refTestNone(1)); // ref.i31
+  assertEquals([0, 0], wasm.refTestNone({'JavaScript': 'Object'}));
+
   // ref.cast
   let structSuperObj = wasm.createStructSuper();
   let structSubObj = wasm.createStructSub();
@@ -232,6 +244,15 @@ d8.file.execute('test/mjsunit/wasm/wasm-module-builder.js');
   assertEquals(1, wasm.refCastAny(1));
   assertSame(jsObj, wasm.refCastAny(jsObj));
 
+  assertTraps(kTrapIllegalCast, () => wasm.refCastNone(null));
+  assertTraps(kTrapIllegalCast, () => wasm.refCastNone(undefined));
+  assertTraps(kTrapIllegalCast, () => wasm.refCastNone(structSuperObj));
+  assertTraps(kTrapIllegalCast, () => wasm.refCastNone(structSubObj));
+  assertTraps(kTrapIllegalCast, () => wasm.refCastNone(arrayObj));
+  assertTraps(kTrapIllegalCast, () => wasm.refCastNone(funcObj));
+  assertTraps(kTrapIllegalCast, () => wasm.refCastNone(1));
+  assertTraps(kTrapIllegalCast, () => wasm.refCastNone(jsObj));
+
   // ref.cast null
   assertSame(null, wasm.refCastNullStructSuper(null));
   assertTraps(kTrapIllegalCast, () => wasm.refCastNullStructSuper(undefined));
@@ -304,4 +325,13 @@ d8.file.execute('test/mjsunit/wasm/wasm-module-builder.js');
   assertSame(funcObj, wasm.refCastNullAny(funcObj));
   assertEquals(1, wasm.refCastNullAny(1));
   assertSame(jsObj, wasm.refCastNullAny(jsObj));
+
+  assertSame(null, wasm.refCastNullNone(null));
+  assertTraps(kTrapIllegalCast, () => wasm.refCastNullNone(undefined));
+  assertTraps(kTrapIllegalCast, () => wasm.refCastNullNone(structSuperObj));
+  assertTraps(kTrapIllegalCast, () => wasm.refCastNullNone(structSubObj));
+  assertTraps(kTrapIllegalCast, () => wasm.refCastNullNone(arrayObj));
+  assertTraps(kTrapIllegalCast, () => wasm.refCastNullNone(funcObj));
+  assertTraps(kTrapIllegalCast, () => wasm.refCastNullNone(1));
+  assertTraps(kTrapIllegalCast, () => wasm.refCastNullNone(jsObj));
 })();

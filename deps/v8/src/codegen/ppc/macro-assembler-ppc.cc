@@ -3781,12 +3781,15 @@ SIMD_SHIFT_LIST(EMIT_SIMD_SHIFT)
   V(F32x4Ceil, xvrspip)              \
   V(F32x4Floor, xvrspim)             \
   V(F32x4Trunc, xvrspiz)             \
+  V(F32x4SConvertI32x4, xvcvsxwsp)   \
+  V(F32x4UConvertI32x4, xvcvuxwsp)   \
   V(I64x2Neg, vnegd)                 \
   V(I64x2SConvertI32x4Low, vupklsw)  \
   V(I64x2SConvertI32x4High, vupkhsw) \
   V(I32x4Neg, vnegw)                 \
   V(I32x4SConvertI16x8Low, vupklsh)  \
   V(I32x4SConvertI16x8High, vupkhsh) \
+  V(I32x4UConvertF32x4, xvcvspuxws)  \
   V(I16x8SConvertI8x16Low, vupklsb)  \
   V(I16x8SConvertI8x16High, vupkhsb) \
   V(I8x16Popcnt, vpopcntb)
@@ -4332,6 +4335,15 @@ void TurboAssembler::F32x4Pmax(Simd128Register dst, Simd128Register src1,
   vsel(dst, src1, src2, kScratchSimd128Reg);
 }
 
+void TurboAssembler::I32x4SConvertF32x4(Simd128Register dst,
+                                        Simd128Register src,
+                                        Simd128Register scratch) {
+  // NaN to 0
+  xvcmpeqsp(scratch, src, src);
+  vand(scratch, src, scratch);
+  xvcvspsxws(dst, scratch);
+}
+
 void TurboAssembler::I16x8SConvertI32x4(Simd128Register dst,
                                         Simd128Register src1,
                                         Simd128Register src2) {
@@ -4466,6 +4478,11 @@ void TurboAssembler::V128AnyTrue(Register dst, Simd128Register src,
 
 void TurboAssembler::S128Not(Simd128Register dst, Simd128Register src) {
   vnor(dst, src, src);
+}
+
+void TurboAssembler::S128Select(Simd128Register dst, Simd128Register src1,
+                                Simd128Register src2, Simd128Register mask) {
+  vsel(dst, src2, src1, mask);
 }
 
 Register GetRegisterThatIsNotOneOf(Register reg1, Register reg2, Register reg3,

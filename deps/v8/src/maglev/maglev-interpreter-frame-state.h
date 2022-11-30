@@ -68,19 +68,19 @@ void DestructivelyIntersect(ZoneMap<Key, Value>& lhs_map,
 // (possibly "kUnknown").
 // All heap object types include the heap object bit, so that they can be
 // checked for AnyHeapObject with a single bit check.
-// TODO(leszeks): Figure out how to represent Number/Numeric with this encoding.
-#define NODE_TYPE_LIST(V)                              \
-  V(Unknown, 0)                                        \
-  V(Number, (1 << 0))                                  \
-  V(Smi, (1 << 1) | kNumber)                           \
-  V(AnyHeapObject, (1 << 2))                           \
-  V(Name, (1 << 3) | kAnyHeapObject)                   \
-  V(String, (1 << 4) | kName)                          \
-  V(InternalizedString, (1 << 5) | kString)            \
-  V(Symbol, (1 << 6) | kName)                          \
-  V(JSReceiver, (1 << 7) | kAnyHeapObject)             \
-  V(HeapObjectWithKnownMap, (1 << 8) | kAnyHeapObject) \
-  V(HeapNumber, kHeapObjectWithKnownMap | kNumber)     \
+#define NODE_TYPE_LIST(V)                                         \
+  V(Unknown, 0)                                                   \
+  V(Number, (1 << 0))                                             \
+  V(ObjectWithKnownMap, (1 << 1))                                 \
+  V(Smi, (1 << 2) | kObjectWithKnownMap | kNumber)                \
+  V(AnyHeapObject, (1 << 3))                                      \
+  V(Name, (1 << 4) | kAnyHeapObject)                              \
+  V(String, (1 << 5) | kName)                                     \
+  V(InternalizedString, (1 << 6) | kString)                       \
+  V(Symbol, (1 << 7) | kName)                                     \
+  V(JSReceiver, (1 << 8) | kAnyHeapObject)                        \
+  V(HeapObjectWithKnownMap, kObjectWithKnownMap | kAnyHeapObject) \
+  V(HeapNumber, kHeapObjectWithKnownMap | kNumber)                \
   V(JSReceiverWithKnownMap, kJSReceiver | kHeapObjectWithKnownMap)
 
 enum class NodeType {
@@ -91,6 +91,10 @@ enum class NodeType {
 
 inline NodeType CombineType(NodeType left, NodeType right) {
   return static_cast<NodeType>(static_cast<int>(left) |
+                               static_cast<int>(right));
+}
+inline NodeType IntersectType(NodeType left, NodeType right) {
+  return static_cast<NodeType>(static_cast<int>(left) &
                                static_cast<int>(right));
 }
 inline bool NodeTypeIs(NodeType type, NodeType to_check) {
@@ -132,8 +136,7 @@ struct NodeInfo {
   // Mutate this node info by merging in another node info, with the result
   // being a node info that is the subset of information valid in both inputs.
   void MergeWith(const NodeInfo& other) {
-    type = static_cast<NodeType>(static_cast<int>(type) &
-                                 static_cast<int>(other.type));
+    type = IntersectType(type, other.type);
     tagged_alternative = tagged_alternative == other.tagged_alternative
                              ? tagged_alternative
                              : nullptr;
@@ -755,11 +758,6 @@ class MergePointInterpreterFrameState {
     DCHECK_EQ(value->properties().value_representation(),
               ValueRepresentation::kInt32);
     DCHECK(!value->properties().is_conversion());
-#define IS_INT32_OP_NODE(Name) || value->Is<Name>()
-    DCHECK(value->Is<Int32Constant>() || value->Is<StringLength>() ||
-           value->Is<BuiltinStringPrototypeCharCodeAt>()
-               INT32_OPERATIONS_NODE_LIST(IS_INT32_OP_NODE));
-#undef IS_INT32_OP_NODE
     NodeInfo* node_info = known_node_aspects.GetOrCreateInfoFor(value);
     if (!node_info->tagged_alternative) {
       // Create a tagged version.
@@ -768,14 +766,37 @@ class MergePointInterpreterFrameState {
         int32_t constant = value->Cast<Int32Constant>()->value();
         return GetSmiConstant(compilation_unit, smi_constants, constant);
       } else if (value->Is<StringLength>() ||
-                 value->Is<BuiltinStringPrototypeCharCodeAt>()) {
+                 value->Is<BuiltinStringPrototypeCharCodeAt>() ||
+                 node_info->is_smi()) {
         static_assert(String::kMaxLength <= kSmiMaxValue,
                       "String length must fit into a Smi");
         tagged = Node::New<UnsafeSmiTag>(compilation_unit.zone(), {value});
       } else {
-        tagged = Node::New<CheckedSmiTag, std::initializer_list<ValueNode*>>(
-            compilation_unit.zone(),
-            DeoptFrame(value->eager_deopt_info()->top_frame()), {value});
+        tagged = Node::New<Int32ToNumber>(compilation_unit.zone(), {value});
+      }
+
+      Node::List::AddAfter(value, tagged);
+      compilation_unit.RegisterNodeInGraphLabeller(tagged);
+      node_info->tagged_alternative = tagged;
+    }
+    return node_info->tagged_alternative;
+  }
+
+  ValueNode* FromUint32ToTagged(MaglevCompilationUnit& compilation_unit,
+                                ZoneMap<int, SmiConstant*>& smi_constants,
+                                KnownNodeAspects& known_node_aspects,
+                                ValueNode* value) {
+    DCHECK_EQ(value->properties().value_representation(),
+              ValueRepresentation::kUint32);
+    DCHECK(!value->properties().is_conversion());
+    NodeInfo* node_info = known_node_aspects.GetOrCreateInfoFor(value);
+    if (!node_info->tagged_alternative) {
+      // Create a tagged version.
+      ValueNode* tagged;
+      if (node_info->is_smi()) {
+        tagged = Node::New<UnsafeSmiTag>(compilation_unit.zone(), {value});
+      } else {
+        tagged = Node::New<Uint32ToNumber>(compilation_unit.zone(), {value});
       }
 
       Node::List::AddAfter(value, tagged);
@@ -791,19 +812,17 @@ class MergePointInterpreterFrameState {
     DCHECK_EQ(value->properties().value_representation(),
               ValueRepresentation::kFloat64);
     DCHECK(!value->properties().is_conversion());
-    // Check if the next Node in the block after value is its Float64Box
-    // version and reuse it.
-    if (value->NextNode()) {
-      Float64Box* tagged = value->NextNode()->TryCast<Float64Box>();
-      if (tagged != nullptr && value == tagged->input().node()) {
-        return tagged;
-      }
+    NodeInfo* node_info = known_node_aspects.GetOrCreateInfoFor(value);
+    if (!node_info->tagged_alternative) {
+      // Create a tagged version.
+      ValueNode* tagged =
+          Node::New<Float64Box>(compilation_unit.zone(), {value});
+
+      Node::List::AddAfter(value, tagged);
+      compilation_unit.RegisterNodeInGraphLabeller(tagged);
+      node_info->tagged_alternative = tagged;
     }
-    // Otherwise create a tagged version.
-    ValueNode* tagged = Node::New<Float64Box>(compilation_unit.zone(), {value});
-    Node::List::AddAfter(value, tagged);
-    compilation_unit.RegisterNodeInGraphLabeller(tagged);
-    return tagged;
+    return node_info->tagged_alternative;
   }
 
   // TODO(victorgomes): Consider refactor this function to share code with
@@ -818,6 +837,9 @@ class MergePointInterpreterFrameState {
       case ValueRepresentation::kInt32:
         return FromInt32ToTagged(compilation_unit, smi_constants,
                                  known_node_aspects, value);
+      case ValueRepresentation::kUint32:
+        return FromUint32ToTagged(compilation_unit, smi_constants,
+                                  known_node_aspects, value);
       case ValueRepresentation::kFloat64:
         return FromFloat64ToTagged(compilation_unit, known_node_aspects, value);
     }

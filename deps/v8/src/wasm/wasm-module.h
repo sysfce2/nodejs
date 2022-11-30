@@ -286,7 +286,7 @@ struct ModuleWireBytes;
 
 class V8_EXPORT_PRIVATE LazilyGeneratedNames {
  public:
-  WireBytesRef LookupFunctionName(const ModuleWireBytes& wire_bytes,
+  WireBytesRef LookupFunctionName(ModuleWireBytes wire_bytes,
                                   uint32_t function_index);
 
   void AddForTesting(int function_index, WireBytesRef name);
@@ -689,6 +689,8 @@ V8_EXPORT_PRIVATE int GetSubtypingDepth(const WasmModule* module,
 // It is illegal for anyone receiving a ModuleWireBytes to store pointers based
 // on module_bytes, as this storage is only guaranteed to be alive as long as
 // this struct is alive.
+// As {ModuleWireBytes} is just a wrapper around a {base::Vector<const byte>},
+// it should generally be passed by value.
 struct V8_EXPORT_PRIVATE ModuleWireBytes {
   explicit ModuleWireBytes(base::Vector<const byte> module_bytes)
       : module_bytes_(module_bytes) {}
@@ -701,8 +703,7 @@ struct V8_EXPORT_PRIVATE ModuleWireBytes {
   WasmName GetNameOrNull(WireBytesRef ref) const;
 
   // Get a string stored in the module bytes representing a function name.
-  WasmName GetNameOrNull(const WasmFunction* function,
-                         const WasmModule* module) const;
+  WasmName GetNameOrNull(int func_index, const WasmModule* module) const;
 
   // Checks the given reference is contained within the module bytes.
   bool BoundsCheck(WireBytesRef ref) const {
@@ -724,13 +725,14 @@ struct V8_EXPORT_PRIVATE ModuleWireBytes {
  private:
   base::Vector<const byte> module_bytes_;
 };
+ASSERT_TRIVIALLY_COPYABLE(ModuleWireBytes);
 
 // A helper for printing out the names of functions.
 struct WasmFunctionName {
-  WasmFunctionName(const WasmFunction* function, WasmName name)
-      : function_(function), name_(name) {}
+  WasmFunctionName(int func_index, WasmName name)
+      : func_index_(func_index), name_(name) {}
 
-  const WasmFunction* function_;
+  const int func_index_;
   const WasmName name_;
 };
 

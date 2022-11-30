@@ -28,10 +28,7 @@
 #include "test/common/wasm/wasm-module-runner.h"
 #include "test/fuzzer/fuzzer-support.h"
 
-namespace v8 {
-namespace internal {
-namespace wasm {
-namespace fuzzer {
+namespace v8::internal::wasm::fuzzer {
 
 // Compile a baseline module. We pass a pointer to a max step counter and a
 // nondeterminsm flag that are updated during execution by Liftoff.
@@ -43,10 +40,10 @@ Handle<WasmModuleObject> CompileReferenceModule(Zone* zone, Isolate* isolate,
   // Create the native module.
   std::shared_ptr<NativeModule> native_module;
   constexpr bool kNoVerifyFunctions = false;
-  auto enabled_features = i::wasm::WasmFeatures::FromIsolate(isolate);
+  auto enabled_features = WasmFeatures::FromIsolate(isolate);
   ModuleResult module_res = DecodeWasmModule(
-      enabled_features, wire_bytes.start(), wire_bytes.end(),
-      kNoVerifyFunctions, ModuleOrigin::kWasmOrigin, isolate->counters(),
+      enabled_features, wire_bytes.module_bytes(), kNoVerifyFunctions,
+      ModuleOrigin::kWasmOrigin, isolate->counters(),
       isolate->metrics_recorder(), v8::metrics::Recorder::ContextId::Empty(),
       DecodingMethod::kSync, GetWasmEngine()->allocator());
   CHECK(module_res.ok());
@@ -86,7 +83,7 @@ Handle<WasmModuleObject> CompileReferenceModule(Zone* zone, Isolate* isolate,
   return WasmModuleObject::New(isolate, std::move(native_module), script);
 }
 
-void InterpretAndExecuteModule(i::Isolate* isolate,
+void InterpretAndExecuteModule(Isolate* isolate,
                                Handle<WasmModuleObject> module_object,
                                Handle<WasmModuleObject> module_ref,
                                int32_t* max_steps, int32_t* nondeterminism) {
@@ -506,9 +503,9 @@ void DecodeAndAppendInitExpr(StdoutStream& os, Zone* zone,
 void GenerateTestCase(Isolate* isolate, ModuleWireBytes wire_bytes,
                       bool compiles) {
   constexpr bool kVerifyFunctions = false;
-  auto enabled_features = i::wasm::WasmFeatures::FromIsolate(isolate);
+  auto enabled_features = WasmFeatures::FromIsolate(isolate);
   ModuleResult module_res = DecodeWasmModule(
-      enabled_features, wire_bytes.start(), wire_bytes.end(), kVerifyFunctions,
+      enabled_features, wire_bytes.module_bytes(), kVerifyFunctions,
       ModuleOrigin::kWasmOrigin, isolate->counters(),
       isolate->metrics_recorder(), v8::metrics::Recorder::ContextId::Empty(),
       DecodingMethod::kSync, GetWasmEngine()->allocator());
@@ -717,18 +714,29 @@ void GenerateTestCase(Isolate* isolate, ModuleWireBytes wire_bytes,
   }
 }
 
-void OneTimeEnableStagedWasmFeatures(v8::Isolate* isolate) {
-  struct EnableStagedWasmFeatures {
-    explicit EnableStagedWasmFeatures(v8::Isolate* isolate) {
-#define ENABLE_STAGED_FEATURES(feat, desc, val) \
+void EnableExperimentalWasmFeatures(v8::Isolate* isolate) {
+  struct EnableExperimentalWasmFeatures {
+    explicit EnableExperimentalWasmFeatures(v8::Isolate* isolate) {
+      // Enable all staged features.
+#define ENABLE_STAGED_FEATURES(feat, ...) \
   v8_flags.experimental_wasm_##feat = true;
       FOREACH_WASM_STAGING_FEATURE_FLAG(ENABLE_STAGED_FEATURES)
 #undef ENABLE_STAGED_FEATURES
+
+      // Enable non-staged experimental features that we also want to fuzz.
+      v8_flags.experimental_wasm_gc = true;
+
+      // Enforce implications from enabling features.
+      FlagList::EnforceFlagImplications();
+
+      // Last, install any conditional features. Implications are handled
+      // implicitly.
       isolate->InstallConditionalFeatures(isolate->GetCurrentContext());
     }
   };
   // The compiler will properly synchronize the constructor call.
-  static EnableStagedWasmFeatures one_time_enable_staged_features(isolate);
+  static EnableExperimentalWasmFeatures one_time_enable_experimental_features(
+      isolate);
 }
 
 void WasmExecutionFuzzer::FuzzWasmModule(base::Vector<const uint8_t> data,
@@ -741,7 +749,7 @@ void WasmExecutionFuzzer::FuzzWasmModule(base::Vector<const uint8_t> data,
   // respect that limit.
   if (data.size() > max_input_size()) return;
 
-  i::Isolate* i_isolate = reinterpret_cast<Isolate*>(isolate);
+  Isolate* i_isolate = reinterpret_cast<Isolate*>(isolate);
 
   // Clear any pending exceptions from a prior run.
   i_isolate->clear_pending_exception();
@@ -753,7 +761,7 @@ void WasmExecutionFuzzer::FuzzWasmModule(base::Vector<const uint8_t> data,
   // We explicitly enable staged WebAssembly features here to increase fuzzer
   // coverage. For libfuzzer fuzzers it is not possible that the fuzzer enables
   // the flag by itself.
-  OneTimeEnableStagedWasmFeatures(isolate);
+  EnableExperimentalWasmFeatures(isolate);
 
   v8::TryCatch try_catch(isolate);
   HandleScope scope(i_isolate);
@@ -782,15 +790,11 @@ void WasmExecutionFuzzer::FuzzWasmModule(base::Vector<const uint8_t> data,
   }
   // Note: After dividing by 3 for 4 times, configuration_byte is within [0, 3].
 
-// Control whether Liftoff or the interpreter will be used as the reference
-// tier.
-// TODO(thibaudm): Port nondeterminism detection to arm.
-#if defined(V8_TARGET_ARCH_X64) || defined(V8_TARGET_ARCH_X86) || \
-    defined(V8_TARGET_ARCH_ARM64) || defined(V8_TARGET_ARCH_ARM)
-  bool liftoff_as_reference = configuration_byte & 1;
-#else
-  bool liftoff_as_reference = false;
-#endif
+  // Control whether Liftoff or the interpreter will be used as the reference
+  // tier.
+  bool liftoff_as_reference =
+      v8_flags.experimental_wasm_gc || (configuration_byte & 1);
+
   FlagScope<bool> turbo_mid_tier_regalloc(
       &v8_flags.turbo_force_mid_tier_regalloc, configuration_byte == 0);
 
@@ -807,7 +811,7 @@ void WasmExecutionFuzzer::FuzzWasmModule(base::Vector<const uint8_t> data,
     GenerateTestCase(i_isolate, wire_bytes, true);
   }
 
-  auto enabled_features = i::wasm::WasmFeatures::FromIsolate(i_isolate);
+  auto enabled_features = WasmFeatures::FromIsolate(i_isolate);
   MaybeHandle<WasmModuleObject> compiled_module;
   {
     // Explicitly enable Liftoff, disable tiering and set the tier_mask. This
@@ -849,7 +853,4 @@ void WasmExecutionFuzzer::FuzzWasmModule(base::Vector<const uint8_t> data,
                             module_ref, &max_steps, &nondeterminism);
 }
 
-}  // namespace fuzzer
-}  // namespace wasm
-}  // namespace internal
-}  // namespace v8
+}  // namespace v8::internal::wasm::fuzzer

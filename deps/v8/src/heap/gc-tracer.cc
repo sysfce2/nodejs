@@ -547,7 +547,7 @@ void GCTracer::NotifyFullSweepingCompleted() {
   // Notifying twice that V8 sweeping is finished for the same cycle is possible
   // only if Oilpan sweeping is still in progress.
   DCHECK_IMPLIES(notified_full_sweeping_completed_,
-                 notified_full_cppgc_completed_);
+                 !notified_full_cppgc_completed_);
   notified_full_sweeping_completed_ = true;
   StopFullCycleIfNeeded();
 }
@@ -812,7 +812,7 @@ void GCTracer::PrintNVP() const {
           current_.reduce_memory, current_.scopes[Scope::TIME_TO_SAFEPOINT],
           current_scope(Scope::HEAP_PROLOGUE),
           current_scope(Scope::HEAP_EPILOGUE),
-          current_scope(Scope::HEAP_EPILOGUE_ADJUST_NEW_SPACE),
+          current_scope(Scope::HEAP_EPILOGUE_REDUCE_NEW_SPACE),
           current_scope(Scope::HEAP_EXTERNAL_PROLOGUE),
           current_scope(Scope::HEAP_EXTERNAL_EPILOGUE),
           current_scope(Scope::HEAP_EXTERNAL_WEAK_GLOBAL_HANDLES),
@@ -862,6 +862,7 @@ void GCTracer::PrintNVP() const {
           "clear=%.2f "
           "clear.string_table=%.2f "
           "complete.sweep_array_buffers=%.2f "
+          "complete.sweeping=%.2f "
           "evacuate=%.2f "
           "evacuate.clean_up=%.2f "
           "evacuate.copy=%.2f "
@@ -910,6 +911,7 @@ void GCTracer::PrintNVP() const {
           current_scope(Scope::MINOR_MC_CLEAR),
           current_scope(Scope::MINOR_MC_CLEAR_STRING_TABLE),
           current_scope(Scope::MINOR_MC_COMPLETE_SWEEP_ARRAY_BUFFERS),
+          current_scope(Scope::MINOR_MC_COMPLETE_SWEEPING),
           current_scope(Scope::MINOR_MC_EVACUATE),
           current_scope(Scope::MINOR_MC_EVACUATE_CLEAN_UP),
           current_scope(Scope::MINOR_MC_EVACUATE_COPY),
@@ -967,6 +969,7 @@ void GCTracer::PrintNVP() const {
           "clear.weak_references=%.1f "
           "clear.join_job=%.1f "
           "complete.sweep_array_buffers=%.1f "
+          "complete.sweeping=%.1f "
           "epilogue=%.1f "
           "evacuate=%.1f "
           "evacuate.candidates=%.1f "
@@ -1039,7 +1042,7 @@ void GCTracer::PrintNVP() const {
           current_scope(Scope::HEAP_PROLOGUE),
           current_scope(Scope::HEAP_EMBEDDER_TRACING_EPILOGUE),
           current_scope(Scope::HEAP_EPILOGUE),
-          current_scope(Scope::HEAP_EPILOGUE_ADJUST_NEW_SPACE),
+          current_scope(Scope::HEAP_EPILOGUE_REDUCE_NEW_SPACE),
           current_scope(Scope::HEAP_EXTERNAL_PROLOGUE),
           current_scope(Scope::HEAP_EXTERNAL_EPILOGUE),
           current_scope(Scope::HEAP_EXTERNAL_WEAK_GLOBAL_HANDLES),
@@ -1055,6 +1058,7 @@ void GCTracer::PrintNVP() const {
           current_scope(Scope::MC_CLEAR_WEAK_REFERENCES),
           current_scope(Scope::MC_CLEAR_JOIN_JOB),
           current_scope(Scope::MC_COMPLETE_SWEEP_ARRAY_BUFFERS),
+          current_scope(Scope::MC_COMPLETE_SWEEPING),
           current_scope(Scope::MC_EPILOGUE), current_scope(Scope::MC_EVACUATE),
           current_scope(Scope::MC_EVACUATE_CANDIDATES),
           current_scope(Scope::MC_EVACUATE_CLEAN_UP),
@@ -1809,6 +1813,21 @@ void GCTracer::ReportYoungCycleToRecorder() {
   }
 
   recorder->AddMainThreadEvent(event, GetContextId(heap_->isolate()));
+}
+
+GarbageCollector GCTracer::GetCurrentCollector() const {
+  switch (current_.type) {
+    case Event::Type::SCAVENGER:
+      return GarbageCollector::SCAVENGER;
+    case Event::Type::MARK_COMPACTOR:
+    case Event::Type::INCREMENTAL_MARK_COMPACTOR:
+      return GarbageCollector::MARK_COMPACTOR;
+    case Event::Type::MINOR_MARK_COMPACTOR:
+    case Event::Type::INCREMENTAL_MINOR_MARK_COMPACTOR:
+      return GarbageCollector::MINOR_MARK_COMPACTOR;
+    case Event::Type::START:
+      UNREACHABLE();
+  }
 }
 
 }  // namespace internal

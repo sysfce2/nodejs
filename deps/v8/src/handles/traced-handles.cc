@@ -97,7 +97,15 @@ class TracedNode final {
 
   void clear_markbit() { flags_ = Markbit::update(flags_, false); }
 
-  void set_raw_object(Address value) { object_ = value; }
+  template <AccessMode access_mode = AccessMode::NON_ATOMIC>
+  void set_raw_object(Address value) {
+    if constexpr (access_mode == AccessMode::NON_ATOMIC) {
+      object_ = value;
+    } else {
+      reinterpret_cast<std::atomic<Address>*>(&object_)->store(
+          value, std::memory_order_relaxed);
+    }
+  }
   Address raw_object() const { return object_; }
   Object object() const { return Object(object_); }
   Handle<Object> handle() { return Handle<Object>(&object_); }
@@ -455,8 +463,24 @@ void TracedNodeBlock::FreeNode(TracedNode* node) {
   used_--;
 }
 
-bool NeedsTrackingInYoungNodes(Object value, TracedNode* node) {
-  return ObjectInYoungGeneration(value) && !node->is_in_young_list();
+CppHeap* GetCppHeapIfUnifiedYoungGC(Isolate* isolate) {
+  // TODO(v8:13475) Consider removing this check when unified-young-gen becomes
+  // default.
+  if (!v8_flags.cppgc_young_generation) return nullptr;
+  auto* cpp_heap = CppHeap::From(isolate->heap()->cpp_heap());
+  if (cpp_heap && cpp_heap->generational_gc_supported()) return cpp_heap;
+  return nullptr;
+}
+
+bool IsCppGCHostOld(CppHeap& cpp_heap, Address host) {
+  DCHECK(host);
+  DCHECK(cpp_heap.generational_gc_supported());
+  auto* host_ptr = reinterpret_cast<void*>(host);
+  auto* page = cppgc::internal::BasePage::FromInnerAddress(&cpp_heap, host_ptr);
+  // TracedReference may be created on stack, in which case assume it's young
+  // and doesn't need to be remembered, since it'll anyway be scanned.
+  if (!page) return false;
+  return !page->ObjectHeaderFromInnerAddress(host_ptr).IsYoung();
 }
 
 void SetSlotThreadSafe(Address** slot, Address* val) {
@@ -488,6 +512,8 @@ class TracedHandlesImpl final {
   void DeleteEmptyBlocks();
 
   void ResetDeadNodes(WeakSlotCallbackWithHeap should_reset_handle);
+  void CheckNodeMarkingStateIsConsistent(
+      bool may_find_marked_nodes, WeakSlotCallbackWithHeap should_reset_handle);
 
   void ComputeWeaknessForYoungObjects(WeakSlotCallback is_unmodified);
   void ProcessYoungObjects(RootVisitor* visitor,
@@ -511,10 +537,14 @@ class TracedHandlesImpl final {
   TracedNode* AllocateNode();
   void FreeNode(TracedNode*);
 
+  bool NeedsTrackingInYoungNodes(Object value, TracedNode* node, Address* slot,
+                                 GlobalHandleStoreMode store_mode) const;
+
   TracedNodeBlock::OverallList blocks_;
   TracedNodeBlock::UsableList usable_blocks_;
   // List of young nodes. May refer to nodes in `blocks_`, `usable_blocks_`, and
-  // `empty_block_candidates_`.
+  // `empty_block_candidates_`. In case unified young GC is enabled, this serves
+  // as an old-to-young remembered set for cppgc-to-V8 references.
   std::vector<TracedNode*> young_nodes_;
   // Empty blocks that are still referred to from `young_nodes_`.
   std::vector<TracedNodeBlock*> empty_block_candidates_;
@@ -594,15 +624,37 @@ TracedHandlesImpl::~TracedHandlesImpl() {
   DCHECK_EQ(block_size_bytes, block_size_bytes_);
 }
 
+bool TracedHandlesImpl::NeedsTrackingInYoungNodes(
+    Object object, TracedNode* node, Address* slot,
+    GlobalHandleStoreMode store_mode) const {
+  // If unified young generation is supported, we don't want to treat all young
+  // nodes as roots, but rather trace them normally. With unified GC we only
+  // track old-to-young nodes in the vector.
+  if (auto* cpp_heap = GetCppHeapIfUnifiedYoungGC(isolate_)) {
+    if (store_mode == GlobalHandleStoreMode::kInitializingStore) {
+      // Don't record initializing stores.
+      return false;
+    } else if (is_marking_) {
+      // If marking is in progress, the marking barrier will be issued.
+      return false;
+    } else if (!IsCppGCHostOld(*cpp_heap, reinterpret_cast<Address>(slot))) {
+      // Otherwise, if the host object is young, we don't need to record.
+      return false;
+    }
+  }
+  return ObjectInYoungGeneration(object) && !node->is_in_young_list();
+}
+
 Handle<Object> TracedHandlesImpl::Create(Address value, Address* slot,
                                          GlobalHandleStoreMode store_mode) {
   Object object(value);
   auto* node = AllocateNode();
   bool needs_young_bit_update = false;
-  if (NeedsTrackingInYoungNodes(object, node)) {
+  if (NeedsTrackingInYoungNodes(object, node, slot, store_mode)) {
     needs_young_bit_update = true;
     young_nodes_.push_back(node);
   }
+
   bool needs_black_allocation = false;
   if (is_marking_ && store_mode != GlobalHandleStoreMode::kInitializingStore) {
     needs_black_allocation = true;
@@ -626,14 +678,15 @@ void TracedHandlesImpl::Destroy(TracedNodeBlock& node_block, TracedNode& node) {
   }
 
   if (is_marking_) {
-    // Incremental marking is on. This also covers the scavenge case which
-    // prohibits eagerly reclaiming nodes when marking is on during a scavenge.
+    // Incremental/concurrent marking is running. This also covers the scavenge
+    // case which prohibits eagerly reclaiming nodes when marking is on during a
+    // scavenge.
     //
     // On-heap traced nodes are released in the atomic pause in
     // `IterateWeakRootsForPhantomHandles()` when they are discovered as not
     // marked. Eagerly clear out the object here to avoid needlessly marking it
     // from this point on. The node will be reclaimed on the next cycle.
-    node.set_raw_object(kNullAddress);
+    node.set_raw_object<AccessMode::ATOMIC>(kNullAddress);
     return;
   }
 
@@ -681,6 +734,17 @@ void TracedHandlesImpl::Move(TracedNode& from_node, Address** from,
     // Write barrier needs to cover node as well as object.
     to_node->set_markbit<AccessMode::ATOMIC>();
     WriteBarrier::MarkingFromGlobalHandle(to_node->object());
+  } else if (auto* cpp_heap = GetCppHeapIfUnifiedYoungGC(isolate_)) {
+    const bool object_is_young_and_not_yet_recorded =
+        !from_node.is_in_young_list() &&
+        ObjectInYoungGeneration(from_node.object());
+    if (object_is_young_and_not_yet_recorded &&
+        IsCppGCHostOld(*cpp_heap, reinterpret_cast<Address>(to))) {
+      DCHECK_EQ(std::find(young_nodes_.begin(), young_nodes_.end(), &from_node),
+                young_nodes_.end());
+      from_node.set_is_in_young_list(true);
+      young_nodes_.push_back(&from_node);
+    }
   }
   SetSlotThreadSafe(from, nullptr);
 }
@@ -783,6 +847,45 @@ void TracedHandlesImpl::ResetDeadNodes(
   }
 }
 
+void TracedHandlesImpl::CheckNodeMarkingStateIsConsistent(
+    bool may_find_marked_nodes, WeakSlotCallbackWithHeap should_reset_handle) {
+  CHECK(isolate_->heap()->concurrent_marking()->IsStopped());
+  auto consistency_check = [this](bool may_find_marked_nodes,
+                                  WeakSlotCallbackWithHeap should_reset_handle,
+                                  TracedNode* node) {
+    CHECK_IMPLIES(!node->is_in_use(), !node->markbit());
+    if (!node->is_in_use()) {
+      return;
+    }
+    if (is_marking_) {
+      // During marking, all nodes are considered roots, so there should be no
+      // nodes pointing into from space, as we only call this method after
+      // page flips and roots processing.
+      Object object = node->object();
+      if (object.IsHeapObject()) {
+        auto* chunk =
+            BasicMemoryChunk::FromHeapObject(HeapObject::cast(object));
+        // Non-LO pages must not be in from space.
+        CHECK_IMPLIES(!chunk->IsLargePage(),
+                      !chunk->IsFlagSet(BasicMemoryChunk::FROM_PAGE));
+        // LO pages may be in from space depending on where this method was
+        // called.
+      }
+    }
+    CHECK_IMPLIES(node->markbit(), may_find_marked_nodes);
+    CHECK_IMPLIES(node->markbit(),
+                  !should_reset_handle(isolate_->heap(), node->location()));
+  };
+  for (TracedNode* node : young_nodes_) {
+    consistency_check(may_find_marked_nodes, should_reset_handle, node);
+  }
+  for (const auto block : blocks_) {
+    for (const auto node : *block) {
+      consistency_check(may_find_marked_nodes, should_reset_handle, node);
+    }
+  }
+}
+
 void TracedHandlesImpl::ComputeWeaknessForYoungObjects(
     WeakSlotCallback is_unmodified) {
   if (!v8_flags.reclaim_unmodified_wrappers) return;
@@ -813,9 +916,10 @@ void TracedHandlesImpl::ProcessYoungObjects(
   for (TracedNode* node : young_nodes_) {
     if (!node->is_in_use()) continue;
 
-    DCHECK_IMPLIES(node->is_root(),
-                   !should_reset_handle(isolate_->heap(), node->location()));
+    CHECK_IMPLIES(node->is_root(),
+                  !should_reset_handle(isolate_->heap(), node->location()));
     if (should_reset_handle(isolate_->heap(), node->location())) {
+      CHECK(!is_marking_);
       v8::Value* value = ToApi<v8::Value>(node->handle());
       handler->ResetRoot(
           *reinterpret_cast<v8::TracedReference<v8::Value>*>(&value));
@@ -854,6 +958,8 @@ void TracedHandlesImpl::IterateYoung(RootVisitor* visitor) {
 void TracedHandlesImpl::IterateYoungRoots(RootVisitor* visitor) {
   for (auto* node : young_nodes_) {
     if (!node->is_in_use()) continue;
+
+    CHECK_IMPLIES(is_marking_, node->is_root());
 
     if (!node->is_root()) continue;
 
@@ -909,6 +1015,12 @@ void TracedHandles::DeleteEmptyBlocks() { impl_->DeleteEmptyBlocks(); }
 void TracedHandles::ResetDeadNodes(
     WeakSlotCallbackWithHeap should_reset_handle) {
   impl_->ResetDeadNodes(should_reset_handle);
+}
+
+void TracedHandles::CheckNodeMarkingStateIsConsistent(
+    bool may_find_marked_nodes, WeakSlotCallbackWithHeap should_reset_handle) {
+  impl_->CheckNodeMarkingStateIsConsistent(may_find_marked_nodes,
+                                           should_reset_handle);
 }
 
 void TracedHandles::ComputeWeaknessForYoungObjects(
@@ -989,10 +1101,16 @@ void TracedHandles::Move(Address** from, Address** to) {
 }
 
 // static
-void TracedHandles::Mark(Address* location) {
+Object TracedHandles::Mark(Address* location) {
+  // The load synchronizes internal bitfields that are also read atomically
+  // from the concurrent marker. The counterpart is `TracedNode::Publish()`.
+  Object object =
+      Object(reinterpret_cast<std::atomic<Address>*>(location)->load(
+          std::memory_order_acquire));
   auto* node = TracedNode::FromLocation(location);
   DCHECK(node->is_in_use());
   node->set_markbit<AccessMode::ATOMIC>();
+  return object;
 }
 
 // static

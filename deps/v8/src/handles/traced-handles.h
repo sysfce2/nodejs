@@ -26,14 +26,9 @@ class V8_EXPORT_PRIVATE TracedHandles final {
   static void Copy(const Address* const* from, Address** to);
   static void Move(Address** from, Address** to);
 
-  static void Mark(Address* location);
+  static Object Mark(Address* location);
   static Object MarkConservatively(Address* inner_location,
                                    Address* traced_node_block_base);
-
-  V8_INLINE static Object Acquire(Address* location) {
-    return Object(reinterpret_cast<std::atomic<Address>*>(location)->load(
-        std::memory_order_acquire));
-  }
 
   explicit TracedHandles(Isolate*);
   ~TracedHandles();
@@ -60,6 +55,9 @@ class V8_EXPORT_PRIVATE TracedHandles final {
   void DeleteEmptyBlocks();
 
   void ResetDeadNodes(WeakSlotCallbackWithHeap should_reset_handle);
+
+  void CheckNodeMarkingStateIsConsistent(
+      bool may_find_marked_nodes, WeakSlotCallbackWithHeap should_reset_handle);
 
   // Computes whether young weak objects should be considered roots for young
   // generation garbage collections  or just be treated weakly. Per default

@@ -2,8 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "src/maglev/maglev-code-generator.h"
-
 #include <algorithm>
 
 #include "src/base/hashmap.h"
@@ -20,8 +18,8 @@
 #include "src/deoptimizer/translation-array.h"
 #include "src/execution/frame-constants.h"
 #include "src/interpreter/bytecode-register.h"
-#include "src/maglev/maglev-assembler-inl.h"
 #include "src/maglev/maglev-code-gen-state.h"
+#include "src/maglev/maglev-code-generator.h"
 #include "src/maglev/maglev-compilation-unit.h"
 #include "src/maglev/maglev-graph-labeller.h"
 #include "src/maglev/maglev-graph-printer.h"
@@ -29,6 +27,7 @@
 #include "src/maglev/maglev-graph.h"
 #include "src/maglev/maglev-ir.h"
 #include "src/maglev/maglev-regalloc-data.h"
+#include "src/maglev/x64/maglev-assembler-x64-inl.h"
 #include "src/objects/code-inl.h"
 #include "src/utils/identity-map.h"
 
@@ -546,16 +545,8 @@ class ExceptionHandlerTrampolineBuilder {
               compiler::AllocatedOperand::cast(target.operand()));
           break;
         case ValueRepresentation::kInt32:
-          if (source->allocation().IsConstant()) {
-            // TODO(jgruber): Why is it okay for Int32 constants to remain
-            // untagged while non-constants are unconditionally smi-tagged or
-            // converted to a HeapNumber during materialisation?
-            direct_moves->RecordMove(
-                source, source->allocation(),
-                compiler::AllocatedOperand::cast(target.operand()));
-          } else {
-            materialising_moves->emplace_back(target, source);
-          }
+        case ValueRepresentation::kUint32:
+          materialising_moves->emplace_back(target, source);
           break;
         case ValueRepresentation::kFloat64:
           materialising_moves->emplace_back(target, source);
@@ -584,7 +575,10 @@ class ExceptionHandlerTrampolineBuilder {
     __ RecordComment("EmitMaterialisationsAndPushResults");
     if (save_accumulator) __ Push(kReturnRegister0);
     for (const Move& move : moves) {
-      MaterialiseTo(move.source, kReturnRegister0);
+      // We consider constants after all other operations, since constants
+      // don't need to call NewHeapNumber.
+      if (IsConstantNode(move.source->opcode())) continue;
+      MaterialiseNonConstantTo(move.source, kReturnRegister0);
       __ Push(kReturnRegister0);
     }
   }
@@ -593,13 +587,17 @@ class ExceptionHandlerTrampolineBuilder {
                                   bool save_accumulator) const {
     if (moves.size() == 0) return;
     __ RecordComment("EmitPopMaterialisedResults");
-    for (auto it = moves.rbegin(); it < moves.rend(); it++) {
-      const ValueLocation& target = it->target;
-      if (target.operand().IsRegister()) {
-        __ Pop(target.AssignedGeneralRegister());
+    for (const Move& move : base::Reversed(moves)) {
+      const ValueLocation& target = move.target;
+      Register target_reg = target.operand().IsAnyRegister()
+                                ? target.AssignedGeneralRegister()
+                                : kScratchRegister;
+      if (IsConstantNode(move.source->opcode())) {
+        MaterialiseConstantTo(move.source, target_reg);
       } else {
-        DCHECK(target.operand().IsStackSlot());
-        __ Pop(kScratchRegister);
+        __ Pop(target_reg);
+      }
+      if (target_reg == kScratchRegister) {
         __ movq(masm_->ToMemOperand(target.operand()), kScratchRegister);
       }
     }
@@ -607,16 +605,16 @@ class ExceptionHandlerTrampolineBuilder {
     if (save_accumulator) __ Pop(kReturnRegister0);
   }
 
-  void MaterialiseTo(ValueNode* value, Register dst) const {
+  void MaterialiseNonConstantTo(ValueNode* value, Register dst) const {
+    DCHECK(!value->allocation().IsConstant());
+
     using D = NewHeapNumberDescriptor;
     switch (value->properties().value_representation()) {
       case ValueRepresentation::kInt32: {
-        // We consider Int32Constants together with tagged values.
-        DCHECK(!value->allocation().IsConstant());
         Label done;
-        __ movq(dst, ToMemOperand(value));
+        __ movl(dst, ToMemOperand(value));
         __ addl(dst, dst);
-        __ j(no_overflow, &done);
+        __ j(no_overflow, &done, Label::kNear);
         // If we overflow, instead of bailing out (deopting), we change
         // representation to a HeapNumber.
         __ Cvtlsi2sd(D::GetDoubleRegisterParameter(D::kValue),
@@ -626,17 +624,56 @@ class ExceptionHandlerTrampolineBuilder {
         __ bind(&done);
         break;
       }
+      case ValueRepresentation::kUint32: {
+        Label done, tag_smi;
+        __ movl(dst, ToMemOperand(value));
+        // Unsigned comparison against Smi::kMaxValue.
+        __ cmpl(dst, Immediate(Smi::kMaxValue));
+        // If we don't fit in a Smi, instead of bailing out (deopting), we
+        // change representation to a HeapNumber.
+        __ j(below_equal, &tag_smi, Label::kNear);
+        // The value was loaded with movl, so is zero extended in 64-bit.
+        // Therefore, we can do an unsigned 32-bit converstion to double with a
+        // 64-bit signed conversion (Cvt_q_si2sd instead of Cvt_l_si2sd).
+        __ Cvtqsi2sd(D::GetDoubleRegisterParameter(D::kValue),
+                     ToMemOperand(value));
+        __ CallBuiltin(Builtin::kNewHeapNumber);
+        __ Move(dst, kReturnRegister0);
+        __ jmp(&done, Label::kNear);
+        __ bind(&tag_smi);
+        __ SmiTag(dst);
+        __ bind(&done);
+        break;
+      }
       case ValueRepresentation::kFloat64:
-        if (Float64Constant* constant = value->TryCast<Float64Constant>()) {
-          __ Move(D::GetDoubleRegisterParameter(D::kValue), constant->value());
-        } else {
-          __ Movsd(D::GetDoubleRegisterParameter(D::kValue),
-                   ToMemOperand(value));
-        }
+        __ Movsd(D::GetDoubleRegisterParameter(D::kValue), ToMemOperand(value));
         __ CallBuiltin(Builtin::kNewHeapNumber);
         __ Move(dst, kReturnRegister0);
         break;
       case ValueRepresentation::kTagged:
+        UNREACHABLE();
+    }
+  }
+
+  void MaterialiseConstantTo(ValueNode* value, Register dst) const {
+    DCHECK(value->allocation().IsConstant());
+
+    switch (value->opcode()) {
+      case Opcode::kInt32Constant: {
+        int32_t int_value = value->Cast<Int32Constant>()->value();
+        if (Smi::IsValid(int_value)) {
+          __ Move(dst, Smi::FromInt(int_value));
+        } else {
+          __ movq_heap_number(dst, int_value);
+        }
+        break;
+      }
+      case Opcode::kFloat64Constant: {
+        double double_value = value->Cast<Float64Constant>()->value();
+        __ movq_heap_number(dst, double_value);
+        break;
+      }
+      default:
         UNREACHABLE();
     }
   }
@@ -1033,10 +1070,16 @@ class MaglevTranslationArrayBuilder {
   void BuildEagerDeopt(EagerDeoptInfo* deopt_info) {
     int frame_count = GetFrameCount(deopt_info->top_frame());
     int jsframe_count = frame_count;
-    int update_feedback_count = 0;
+    int update_feedback_count =
+        deopt_info->feedback_to_update().IsValid() ? 1 : 0;
     deopt_info->set_translation_index(
         translation_array_builder_->BeginTranslation(frame_count, jsframe_count,
                                                      update_feedback_count));
+    if (deopt_info->feedback_to_update().IsValid()) {
+      translation_array_builder_->AddUpdateFeedback(
+          GetDeoptLiteral(*deopt_info->feedback_to_update().vector),
+          deopt_info->feedback_to_update().index());
+    }
 
     const InputLocation* current_input_location = deopt_info->input_locations();
     BuildDeoptFrame(deopt_info->top_frame(), current_input_location);
@@ -1045,10 +1088,16 @@ class MaglevTranslationArrayBuilder {
   void BuildLazyDeopt(LazyDeoptInfo* deopt_info) {
     int frame_count = GetFrameCount(deopt_info->top_frame());
     int jsframe_count = frame_count;
-    int update_feedback_count = 0;
+    int update_feedback_count =
+        deopt_info->feedback_to_update().IsValid() ? 1 : 0;
     deopt_info->set_translation_index(
         translation_array_builder_->BeginTranslation(frame_count, jsframe_count,
                                                      update_feedback_count));
+    if (deopt_info->feedback_to_update().IsValid()) {
+      translation_array_builder_->AddUpdateFeedback(
+          GetDeoptLiteral(*deopt_info->feedback_to_update().vector),
+          deopt_info->feedback_to_update().index());
+    }
 
     const InputLocation* current_input_location = deopt_info->input_locations();
 
@@ -1221,6 +1270,9 @@ class MaglevTranslationArrayBuilder {
       case ValueRepresentation::kInt32:
         translation_array_builder_->StoreInt32Register(operand.GetRegister());
         break;
+      case ValueRepresentation::kUint32:
+        translation_array_builder_->StoreUint32Register(operand.GetRegister());
+        break;
       case ValueRepresentation::kFloat64:
         translation_array_builder_->StoreDoubleRegister(
             operand.GetDoubleRegister());
@@ -1237,6 +1289,9 @@ class MaglevTranslationArrayBuilder {
         break;
       case ValueRepresentation::kInt32:
         translation_array_builder_->StoreInt32StackSlot(stack_slot);
+        break;
+      case ValueRepresentation::kUint32:
+        translation_array_builder_->StoreUint32StackSlot(stack_slot);
         break;
       case ValueRepresentation::kFloat64:
         translation_array_builder_->StoreDoubleStackSlot(stack_slot);

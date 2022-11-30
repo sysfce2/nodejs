@@ -56,8 +56,8 @@ struct WasmModule;
 
 V8_EXPORT_PRIVATE
 std::shared_ptr<NativeModule> CompileToNativeModule(
-    Isolate* isolate, const WasmFeatures& enabled, ErrorThrower* thrower,
-    std::shared_ptr<const WasmModule> module, const ModuleWireBytes& wire_bytes,
+    Isolate* isolate, WasmFeatures enabled_features, ErrorThrower* thrower,
+    std::shared_ptr<const WasmModule> module, ModuleWireBytes wire_bytes,
     int compilation_id, v8::metrics::Recorder::ContextId context_id,
     ProfileInformation* pgo_info);
 
@@ -138,8 +138,8 @@ class WrapperQueue {
 // TODO(wasm): factor out common parts of this with the synchronous pipeline.
 class AsyncCompileJob {
  public:
-  AsyncCompileJob(Isolate* isolate, const WasmFeatures& enabled_features,
-                  std::unique_ptr<byte[]> bytes_copy, size_t length,
+  AsyncCompileJob(Isolate* isolate, WasmFeatures enabled_features,
+                  base::OwnedVector<const uint8_t> bytes,
                   Handle<Context> context, Handle<Context> incumbent_context,
                   const char* api_method_name,
                   std::shared_ptr<CompilationResultResolver> resolver,
@@ -263,7 +263,7 @@ class AsyncCompileJob {
   base::TimeTicks start_time_;
   // Copy of the module wire bytes, moved into the {native_module_} on its
   // creation.
-  std::unique_ptr<byte[]> bytes_copy_;
+  base::OwnedVector<const uint8_t> bytes_copy_;
   // Reference to the wire bytes (held in {bytes_copy_} or as part of
   // {native_module_}).
   ModuleWireBytes wire_bytes_;

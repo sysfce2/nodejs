@@ -829,39 +829,6 @@ MaybeHandle<String> Factory::NewStringFromUtf8(
                                   allocation);
 }
 
-namespace {
-struct Wtf16Decoder {
-  int length_;
-  bool is_one_byte_;
-  explicit Wtf16Decoder(const base::Vector<const uint16_t>& data)
-      : length_(data.length()),
-        is_one_byte_(String::IsOneByte(data.begin(), length_)) {}
-  bool is_invalid() const { return false; }
-  bool is_one_byte() const { return is_one_byte_; }
-  int utf16_length() const { return length_; }
-  template <typename Char>
-  void Decode(Char* out, const base::Vector<const uint16_t>& data) {
-    CopyChars(out, data.begin(), length_);
-  }
-};
-}  // namespace
-
-MaybeHandle<String> Factory::NewStringFromUtf16(Handle<WasmArray> array,
-                                                uint32_t start, uint32_t end,
-                                                AllocationType allocation) {
-  DCHECK_EQ(sizeof(uint16_t), array->type()->element_type().value_kind_size());
-  DCHECK_LE(start, end);
-  DCHECK_LE(end, array->length());
-  // {end - start} can never be more than what the Utf8Decoder can handle.
-  static_assert(WasmArray::MaxLength(sizeof(uint16_t)) <= kMaxInt);
-  auto peek_bytes = [&]() -> base::Vector<const uint16_t> {
-    const uint16_t* contents =
-        reinterpret_cast<const uint16_t*>(array->ElementAddress(0));
-    return {contents + start, end - start};
-  };
-  return NewStringFromBytes<Wtf16Decoder>(isolate(), peek_bytes, allocation,
-                                          MessageTemplate::kNone);
-}
 #endif  // V8_ENABLE_WEBASSEMBLY
 
 MaybeHandle<String> Factory::NewStringFromUtf8SubString(
@@ -1537,8 +1504,7 @@ Handle<Script> Factory::CloneScript(Handle<Script> script) {
   scripts = WeakArrayList::AddToEnd(isolate(), scripts,
                                     MaybeObjectHandle::Weak(new_script_handle));
   heap->set_script_list(*scripts);
-  LOG(isolate(),
-      ScriptEvent(V8FileLogger::ScriptEventType::kCreate, script_id));
+  LOG(isolate(), ScriptEvent(ScriptEventType::kCreate, script_id));
   return new_script_handle;
 }
 
@@ -2083,7 +2049,7 @@ Map Factory::InitializeMap(Map map, InstanceType type, int instance_size,
     map.SetInObjectPropertiesStartInWords(instance_size / kTaggedSize -
                                           inobject_properties);
     DCHECK_EQ(map.GetInObjectProperties(), inobject_properties);
-    map.set_prototype_validity_cell(roots->invalid_prototype_validity_cell(),
+    map.set_prototype_validity_cell(ro_roots.invalid_prototype_validity_cell(),
                                     kRelaxedStore);
   } else {
     DCHECK_EQ(inobject_properties, 0);
@@ -3994,18 +3960,24 @@ Handle<JSFunction> Factory::NewFunctionForTesting(Handle<String> name) {
 Handle<JSSharedStruct> Factory::NewJSSharedStruct(
     Handle<JSFunction> constructor) {
   SharedObjectSafePublishGuard publish_guard;
+
+  Handle<Map> instance_map(constructor->initial_map(), isolate());
+  Handle<PropertyArray> property_array;
+  const int num_oob_fields =
+      instance_map->NumberOfFields(ConcurrencyMode::kSynchronous) -
+      instance_map->GetInObjectProperties();
+  if (num_oob_fields > 0) {
+    property_array =
+        NewPropertyArray(num_oob_fields, AllocationType::kSharedOld);
+  }
+
   Handle<JSSharedStruct> instance = Handle<JSSharedStruct>::cast(
       NewJSObject(constructor, AllocationType::kSharedOld));
 
-  Handle<Map> instance_map(instance->map(), isolate());
-  if (instance_map->HasOutOfObjectProperties()) {
-    int num_oob_fields =
-        instance_map->NumberOfFields(ConcurrencyMode::kSynchronous) -
-        instance_map->GetInObjectProperties();
-    Handle<PropertyArray> property_array =
-        NewPropertyArray(num_oob_fields, AllocationType::kSharedOld);
-    instance->SetProperties(*property_array);
-  }
+  // The struct object has not been fully initialized yet. Disallow allocation
+  // from this point on.
+  DisallowGarbageCollection no_gc;
+  if (!property_array.is_null()) instance->SetProperties(*property_array);
 
   return instance;
 }
@@ -4018,6 +3990,10 @@ Handle<JSSharedArray> Factory::NewJSSharedArray(Handle<JSFunction> constructor,
   Handle<JSSharedArray> instance = Handle<JSSharedArray>::cast(
       NewJSObject(constructor, AllocationType::kSharedOld));
   instance->set_elements(*storage);
+  FieldIndex index = FieldIndex::ForDescriptor(
+      constructor->initial_map(),
+      InternalIndex(JSSharedArray::kLengthFieldIndex));
+  instance->FastPropertyAtPut(index, Smi::FromInt(length), SKIP_WRITE_BARRIER);
   return instance;
 }
 

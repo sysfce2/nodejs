@@ -74,12 +74,68 @@ class UseMarkingProcessor {
   template <typename NodeT>
   void MarkInputUses(NodeT* node, const ProcessingState& state) {
     LoopUsedNodes* loop_used_nodes = GetCurrentLoopUsedNodes();
+    // Mark input uses in the same order as inputs are assigned in the register
+    // allocator (see StraightForwardRegisterAllocator::AssignInputs).
+    for (Input& input : *node) {
+      switch (compiler::UnallocatedOperand::cast(input.operand())
+                  .extended_policy()) {
+        case compiler::UnallocatedOperand::MUST_HAVE_REGISTER:
+        case compiler::UnallocatedOperand::REGISTER_OR_SLOT_OR_CONSTANT:
+          break;
+
+        case compiler::UnallocatedOperand::FIXED_REGISTER:
+        case compiler::UnallocatedOperand::FIXED_FP_REGISTER:
+          MarkUse(input.node(), node->id(), &input, loop_used_nodes);
+          break;
+
+        case compiler::UnallocatedOperand::REGISTER_OR_SLOT:
+        case compiler::UnallocatedOperand::SAME_AS_INPUT:
+        case compiler::UnallocatedOperand::NONE:
+        case compiler::UnallocatedOperand::MUST_HAVE_SLOT:
+          UNREACHABLE();
+      }
+    }
+    for (Input& input : *node) {
+      switch (compiler::UnallocatedOperand::cast(input.operand())
+                  .extended_policy()) {
+        case compiler::UnallocatedOperand::MUST_HAVE_REGISTER:
+          MarkUse(input.node(), node->id(), &input, loop_used_nodes);
+          break;
+
+        case compiler::UnallocatedOperand::REGISTER_OR_SLOT_OR_CONSTANT:
+        case compiler::UnallocatedOperand::FIXED_REGISTER:
+        case compiler::UnallocatedOperand::FIXED_FP_REGISTER:
+          break;
+
+        case compiler::UnallocatedOperand::REGISTER_OR_SLOT:
+        case compiler::UnallocatedOperand::SAME_AS_INPUT:
+        case compiler::UnallocatedOperand::NONE:
+        case compiler::UnallocatedOperand::MUST_HAVE_SLOT:
+          UNREACHABLE();
+      }
+    }
+    for (Input& input : *node) {
+      switch (compiler::UnallocatedOperand::cast(input.operand())
+                  .extended_policy()) {
+        case compiler::UnallocatedOperand::REGISTER_OR_SLOT_OR_CONSTANT:
+          MarkUse(input.node(), node->id(), &input, loop_used_nodes);
+          break;
+
+        case compiler::UnallocatedOperand::MUST_HAVE_REGISTER:
+        case compiler::UnallocatedOperand::FIXED_REGISTER:
+        case compiler::UnallocatedOperand::FIXED_FP_REGISTER:
+          break;
+
+        case compiler::UnallocatedOperand::REGISTER_OR_SLOT:
+        case compiler::UnallocatedOperand::SAME_AS_INPUT:
+        case compiler::UnallocatedOperand::NONE:
+        case compiler::UnallocatedOperand::MUST_HAVE_SLOT:
+          UNREACHABLE();
+      }
+    }
     if constexpr (NodeT::kProperties.can_eager_deopt()) {
       MarkCheckpointNodes(node, node->eager_deopt_info(), loop_used_nodes,
                           state);
-    }
-    for (Input& input : *node) {
-      MarkUse(input.node(), node->id(), &input, loop_used_nodes);
     }
     if constexpr (NodeT::kProperties.can_lazy_deopt()) {
       MarkCheckpointNodes(node, node->lazy_deopt_info(), loop_used_nodes,
@@ -201,7 +257,7 @@ class UseMarkingProcessor {
 };
 
 // static
-void MaglevCompiler::Compile(LocalIsolate* local_isolate,
+bool MaglevCompiler::Compile(LocalIsolate* local_isolate,
                              MaglevCompilationInfo* compilation_info) {
   Graph* graph = Graph::New(compilation_info->zone());
 
@@ -245,8 +301,16 @@ void MaglevCompiler::Compile(LocalIsolate* local_isolate,
   }
 #endif
 
+#ifdef V8_TARGET_ARCH_ARM64
   {
-    GraphMultiProcessor<UseMarkingProcessor, MaglevVregAllocator> processor(
+    extern bool MaglevGraphHasUnimplementedNode(Graph*);
+    // TODO(v8:7700): Remove return type once all nodes are implemented.
+    if (MaglevGraphHasUnimplementedNode(graph)) return false;
+  }
+#endif
+
+  {
+    GraphMultiProcessor<MaglevVregAllocator, UseMarkingProcessor> processor(
         UseMarkingProcessor{compilation_info});
     processor.ProcessGraph(graph);
   }
@@ -275,6 +339,8 @@ void MaglevCompiler::Compile(LocalIsolate* local_isolate,
     // Stash the compiled code_generator on the compilation info.
     compilation_info->set_code_generator(std::move(code_generator));
   }
+
+  return true;
 }
 
 // static

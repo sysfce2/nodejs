@@ -185,6 +185,10 @@ class EffectControlLinearizer {
   Node* LowerBigIntDivide(Node* node, Node* frame_state);
   Node* LowerBigIntModulus(Node* node, Node* frame_state);
   Node* LowerBigIntBitwiseAnd(Node* node, Node* frame_state);
+  Node* LowerBigIntBitwiseOr(Node* node, Node* frame_state);
+  Node* LowerBigIntBitwiseXor(Node* node, Node* frame_state);
+  Node* LowerBigIntShiftLeft(Node* node, Node* frame_state);
+  Node* LowerBigIntShiftRight(Node* node, Node* frame_state);
   Node* LowerBigIntNegate(Node* node);
   Node* LowerCheckFloat64Hole(Node* node, Node* frame_state);
   Node* LowerCheckNotTaggedHole(Node* node, Node* frame_state);
@@ -1282,6 +1286,18 @@ bool EffectControlLinearizer::TryWireInStateEffect(Node* node,
       break;
     case IrOpcode::kBigIntBitwiseAnd:
       result = LowerBigIntBitwiseAnd(node, frame_state);
+      break;
+    case IrOpcode::kBigIntBitwiseOr:
+      result = LowerBigIntBitwiseOr(node, frame_state);
+      break;
+    case IrOpcode::kBigIntBitwiseXor:
+      result = LowerBigIntBitwiseXor(node, frame_state);
+      break;
+    case IrOpcode::kBigIntShiftLeft:
+      result = LowerBigIntShiftLeft(node, frame_state);
+      break;
+    case IrOpcode::kBigIntShiftRight:
+      result = LowerBigIntShiftRight(node, frame_state);
       break;
     case IrOpcode::kBigIntNegate:
       result = LowerBigIntNegate(node);
@@ -2522,7 +2538,7 @@ Node* EffectControlLinearizer::LowerCheckedUint32Bounds(Node* node,
     __ Branch(check, &done, &if_abort);
 
     __ Bind(&if_abort);
-    __ Unreachable(&done);
+    __ Unreachable();
 
     __ Bind(&done);
   }
@@ -2568,7 +2584,7 @@ Node* EffectControlLinearizer::LowerCheckedUint64Bounds(Node* node,
     __ Branch(check, &done, &if_abort);
 
     __ Bind(&if_abort);
-    __ Unreachable(&done);
+    __ Unreachable();
 
     __ Bind(&done);
   }
@@ -4703,6 +4719,86 @@ Node* EffectControlLinearizer::LowerBigIntBitwiseAnd(Node* node,
   return value;
 }
 
+Node* EffectControlLinearizer::LowerBigIntBitwiseOr(Node* node,
+                                                    Node* frame_state) {
+  Node* lhs = node->InputAt(0);
+  Node* rhs = node->InputAt(1);
+
+  Callable const callable =
+      Builtins::CallableFor(isolate(), Builtin::kBigIntBitwiseOrNoThrow);
+  auto call_descriptor = Linkage::GetStubCallDescriptor(
+      graph()->zone(), callable.descriptor(),
+      callable.descriptor().GetStackParameterCount(), CallDescriptor::kNoFlags,
+      Operator::kFoldable | Operator::kNoThrow);
+  Node* value = __ Call(call_descriptor, __ HeapConstant(callable.code()), lhs,
+                        rhs, __ NoContextConstant());
+
+  return value;
+}
+
+Node* EffectControlLinearizer::LowerBigIntBitwiseXor(Node* node,
+                                                     Node* frame_state) {
+  Node* lhs = node->InputAt(0);
+  Node* rhs = node->InputAt(1);
+
+  Callable const callable =
+      Builtins::CallableFor(isolate(), Builtin::kBigIntBitwiseXorNoThrow);
+  auto call_descriptor = Linkage::GetStubCallDescriptor(
+      graph()->zone(), callable.descriptor(),
+      callable.descriptor().GetStackParameterCount(), CallDescriptor::kNoFlags,
+      Operator::kFoldable | Operator::kNoThrow);
+  Node* value = __ Call(call_descriptor, __ HeapConstant(callable.code()), lhs,
+                        rhs, __ NoContextConstant());
+
+  // Check for exception sentinel: Smi is returned to signal BigIntTooBig.
+  __ DeoptimizeIf(DeoptimizeReason::kBigIntTooBig, FeedbackSource{},
+                  ObjectIsSmi(value), frame_state);
+
+  return value;
+}
+
+Node* EffectControlLinearizer::LowerBigIntShiftLeft(Node* node,
+                                                    Node* frame_state) {
+  Node* lhs = node->InputAt(0);
+  Node* rhs = node->InputAt(1);
+
+  Callable const callable =
+      Builtins::CallableFor(isolate(), Builtin::kBigIntShiftLeftNoThrow);
+  auto call_descriptor = Linkage::GetStubCallDescriptor(
+      graph()->zone(), callable.descriptor(),
+      callable.descriptor().GetStackParameterCount(), CallDescriptor::kNoFlags,
+      Operator::kFoldable | Operator::kNoThrow);
+  Node* value = __ Call(call_descriptor, __ HeapConstant(callable.code()), lhs,
+                        rhs, __ NoContextConstant());
+
+  // Check for exception sentinel: Smi is returned to signal BigIntTooBig.
+  __ DeoptimizeIf(DeoptimizeReason::kBigIntTooBig, FeedbackSource{},
+                  ObjectIsSmi(value), frame_state);
+
+  return value;
+}
+
+Node* EffectControlLinearizer::LowerBigIntShiftRight(Node* node,
+                                                     Node* frame_state) {
+  Node* lhs = node->InputAt(0);
+  Node* rhs = node->InputAt(1);
+
+  Callable const callable =
+      Builtins::CallableFor(isolate(), Builtin::kBigIntShiftRightNoThrow);
+  auto call_descriptor = Linkage::GetStubCallDescriptor(
+      graph()->zone(), callable.descriptor(),
+      callable.descriptor().GetStackParameterCount(), CallDescriptor::kNoFlags,
+      Operator::kFoldable | Operator::kNoThrow);
+  Node* value = __ Call(call_descriptor, __ HeapConstant(callable.code()), lhs,
+                        rhs, __ NoContextConstant());
+
+  // Check for exception sentinel: Smi is returned to signal BigIntTooBig.
+  __ DeoptimizeIf(DeoptimizeReason::kBigIntTooBig, FeedbackSource{},
+                  ObjectIsSmi(value), frame_state);
+
+  return value;
+}
+
 Node* EffectControlLinearizer::LowerBigIntNegate(Node* node) {
   Callable const callable =
       Builtins::CallableFor(isolate(), Builtin::kBigIntUnaryMinus);
@@ -5395,6 +5491,50 @@ Node* EffectControlLinearizer::AdaptFastCallArgument(
           case CTypeInfo::Type::kFloat32: {
             return __ TruncateFloat64ToFloat32(node);
           }
+          case CTypeInfo::Type::kSeqOneByteString: {
+            // Check that the value is a HeapObject.
+            Node* value_is_smi = ObjectIsSmi(node);
+            __ GotoIf(value_is_smi, if_error);
+
+            Node* map = __ LoadField(AccessBuilder::ForMap(), node);
+            Node* instance_type =
+                __ LoadField(AccessBuilder::ForMapInstanceType(), map);
+
+            Node* encoding = __ Word32And(
+                instance_type,
+                __ Int32Constant(kStringRepresentationAndEncodingMask));
+
+            Node* is_onebytestring = __ Word32Equal(
+                encoding, __ Int32Constant(kSeqOneByteStringTag));
+            __ GotoIfNot(is_onebytestring, if_error);
+
+            Node* length_in_bytes =
+                __ LoadField(AccessBuilder::ForStringLength(), node);
+            Node* data_ptr = __ IntPtrAdd(
+                node, __ IntPtrConstant(SeqOneByteString::kHeaderSize -
+                                        kHeapObjectTag));
+
+            constexpr int kAlign = alignof(FastOneByteString);
+            constexpr int kSize = sizeof(FastOneByteString);
+            static_assert(kSize == sizeof(uintptr_t) + sizeof(size_t),
+                          "The size of "
+                          "FastOneByteString isn't equal to the sum of its "
+                          "expected members.");
+            Node* stack_slot = __ StackSlot(kSize, kAlign);
+
+            __ Store(StoreRepresentation(MachineType::PointerRepresentation(),
+                                         kNoWriteBarrier),
+                     stack_slot, 0, data_ptr);
+            __ Store(StoreRepresentation(MachineRepresentation::kWord32,
+                                         kNoWriteBarrier),
+                     stack_slot, sizeof(size_t), length_in_bytes);
+
+            static_assert(sizeof(uintptr_t) == sizeof(size_t),
+                          "The string length can't "
+                          "fit the PointerRepresentation used to store it.");
+
+            return stack_slot;
+          }
           default: {
             return node;
           }
@@ -5600,6 +5740,7 @@ Node* EffectControlLinearizer::LowerFastApiCall(Node* node) {
           case CTypeInfo::Type::kFloat64:
             return ChangeFloat64ToTagged(
                 c_call_result, CheckForMinusZeroMode::kCheckForMinusZero);
+          case CTypeInfo::Type::kSeqOneByteString:
           case CTypeInfo::Type::kV8Value:
           case CTypeInfo::Type::kApiObject:
           case CTypeInfo::Type::kUint8:
@@ -6149,7 +6290,7 @@ void EffectControlLinearizer::LowerTransitionAndStoreNumberElement(Node* node) {
     // loop peeling can break this assumption.
     __ GotoIf(__ Word32Equal(kind, __ Int32Constant(HOLEY_DOUBLE_ELEMENTS)),
               &do_store);
-    __ Unreachable(&do_store);
+    __ Unreachable();
   }
 
   __ Bind(&transition_smi_array);  // deferred code.

@@ -93,29 +93,17 @@ void Sandbox::Initialize(v8::VirtualAddressSpace* vas) {
   // otherwise wouldn't always be able to allocate objects inside of it.
   CHECK_LT(kSandboxSize, address_space_limit);
 
-#if defined(V8_OS_WIN)
-  if (!IsWindows8Point1OrGreater()) {
-    // On Windows pre 8.1, reserving virtual memory is an expensive operation,
-    // apparently because the OS already charges for the memory required for
-    // all page table entries. For example, a 1TB reservation increases private
-    // memory usage by 2GB. As such, it is not possible to create a proper
-    // sandbox there and so a partially reserved sandbox is created which
-    // doesn't reserve most of the virtual memory, and so doesn't incur the
-    // cost, but also doesn't provide the desired security benefits.
-    max_reservation_size = kSandboxMinimumReservationSize;
-  }
-#endif  // V8_OS_WIN
-
   if (!vas->CanAllocateSubspaces()) {
-    // If we cannot create virtual memory subspaces, we also need to fall back
-    // to creating a partially reserved sandbox. In practice, this should only
-    // happen on Windows version before Windows 10, maybe including early
-    // Windows 10 releases, where the necessary memory management APIs, in
-    // particular, VirtualAlloc2, are not available. This check should also in
-    // practice subsume the preceeding one for Windows 8 and earlier, but we'll
-    // keep both just to be sure since there the partially reserved sandbox is
-    // technically required for a different reason (large virtual memory
-    // reservations being too expensive).
+    // If we cannot create virtual memory subspaces, we fall back to creating a
+    // partially reserved sandbox. This will happen for example on older
+    // Windows versions (before Windows 10) where the necessary memory
+    // management APIs, in particular, VirtualAlloc2, are not available.
+    // Since reserving virtual memory is an expensive operation on Windows
+    // before version 8.1 (reserving 1TB of address space will increase private
+    // memory usage by around 2GB), we only reserve the minimal amount of
+    // address space here. This way, we don't incur the cost of reserving
+    // virtual memory, but also don't get the desired security properties as
+    // unrelated mappings may end up inside the sandbox.
     max_reservation_size = kSandboxMinimumReservationSize;
   }
 
@@ -128,7 +116,6 @@ void Sandbox::Initialize(v8::VirtualAddressSpace* vas) {
   } else {
     constexpr bool use_guard_regions = true;
     bool success = Initialize(vas, kSandboxSize, use_guard_regions);
-#ifdef V8_ENABLE_SANDBOX
     // If sandboxed pointers are enabled, we need the sandbox to be initialized,
     // so fall back to creating a partially reserved sandbox.
     if (!success) {
@@ -142,7 +129,6 @@ void Sandbox::Initialize(v8::VirtualAddressSpace* vas) {
         next_reservation_size /= 2;
       }
     }
-#endif  // V8_ENABLE_SANDBOX
   }
 
   if (!initialized_) {
@@ -196,7 +182,7 @@ bool Sandbox::Initialize(v8::VirtualAddressSpace* vas, size_t size,
 
   initialized_ = true;
 
-  InitializeConstants();
+  FinishInitialization();
 
   DCHECK(!is_partially_reserved());
   return true;
@@ -259,18 +245,35 @@ bool Sandbox::InitializeAsPartiallyReservedSandbox(v8::VirtualAddressSpace* vas,
       std::make_unique<base::VirtualAddressSpacePageAllocator>(
           address_space_.get());
 
-  InitializeConstants();
+  FinishInitialization();
 
   DCHECK(is_partially_reserved());
   return true;
 }
 
+void Sandbox::FinishInitialization() {
+  // Reserve the last page in the sandbox. This way, we can place inaccessible
+  // "objects" (e.g. the empty backing store buffer) there that are guaranteed
+  // to cause a fault on any accidental access.
+  // Further, this also prevents the accidental construction of invalid
+  // SandboxedPointers: if an ArrayBuffer is placed right at the end of the
+  // sandbox, a ArrayBufferView could be constructed with byteLength=0 and
+  // offset=buffer.byteLength, which would lead to a pointer that points just
+  // outside of the sandbox.
+  size_t allocation_granularity = address_space_->allocation_granularity();
+  bool success = address_space_->AllocateGuardRegion(
+      end_ - allocation_granularity, allocation_granularity);
+  // If the sandbox is partially-reserved, this operation may fail, for example
+  // if the last page is outside of the mappable address space of the process.
+  CHECK(success || is_partially_reserved());
+
+  InitializeConstants();
+}
+
 void Sandbox::InitializeConstants() {
-#ifdef V8_ENABLE_SANDBOX
   // Place the empty backing store buffer at the end of the sandbox, so that any
   // accidental access to it will most likely hit a guard page.
-  constants_.set_empty_backing_store_buffer(base_ + size_ - 1);
-#endif
+  constants_.set_empty_backing_store_buffer(end_ - 1);
 }
 
 void Sandbox::TearDown() {
@@ -284,17 +287,13 @@ void Sandbox::TearDown() {
     reservation_base_ = kNullAddress;
     reservation_size_ = 0;
     initialized_ = false;
-#ifdef V8_ENABLE_SANDBOX
     constants_.Reset();
-#endif
   }
 }
 
-#endif  // V8_ENABLE_SANDBOX
-
-#ifdef V8_ENABLE_SANDBOX
 DEFINE_LAZY_LEAKY_OBJECT_GETTER(Sandbox, GetProcessWideSandbox)
-#endif
+
+#endif  // V8_ENABLE_SANDBOX
 
 }  // namespace internal
 }  // namespace v8

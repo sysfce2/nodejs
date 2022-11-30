@@ -3,7 +3,8 @@
 // found in the LICENSE file.
 
 #include "src/codegen/interface-descriptors-inl.h"
-#include "src/maglev/maglev-assembler-inl.h"
+#include "src/common/globals.h"
+#include "src/maglev/x64/maglev-assembler-x64-inl.h"
 #include "src/objects/heap-number.h"
 
 namespace v8 {
@@ -69,6 +70,20 @@ void MaglevAssembler::Allocate(RegisterSnapshot& register_snapshot,
   bind(*done);
 }
 
+void MaglevAssembler::AllocateHeapNumber(RegisterSnapshot register_snapshot,
+                                         Register result,
+                                         DoubleRegister value) {
+  // In the case we need to call the runtime, we should spill the value
+  // register. Even if it is not live in the next node, otherwise the
+  // allocation call might trash it.
+  register_snapshot.live_double_registers.set(value);
+  Allocate(register_snapshot, result, HeapNumber::kSize);
+  LoadRoot(kScratchRegister, RootIndex::kHeapNumberMap);
+  StoreTaggedField(FieldOperand(result, HeapObject::kMapOffset),
+                   kScratchRegister);
+  Movsd(FieldOperand(result, HeapNumber::kValueOffset), value);
+}
+
 void MaglevAssembler::AllocateTwoByteString(RegisterSnapshot register_snapshot,
                                             Register result, int length) {
   Allocate(register_snapshot, result, SeqTwoByteString::SizeFor(length));
@@ -94,8 +109,10 @@ void MaglevAssembler::LoadSingleCharacterString(Register result,
 void MaglevAssembler::LoadSingleCharacterString(Register result,
                                                 Register char_code,
                                                 Register scratch) {
+  // Make sure char_code is zero extended.
+  movl(char_code, char_code);
   if (v8_flags.debug_code) {
-    cmpl(char_code, Immediate(String::kMaxOneByteCharCode));
+    cmpq(char_code, Immediate(String::kMaxOneByteCharCode));
     Assert(below_equal, AbortReason::kUnexpectedValue);
   }
   DCHECK_NE(char_code, scratch);
@@ -164,6 +181,7 @@ void MaglevAssembler::StringCharCodeAt(RegisterSnapshot& register_snapshot,
           __ Move(kContextRegister, masm->native_context().object());
           // This call does not throw nor can deopt.
           __ CallRuntime(Runtime::kStringCharCodeAt);
+          save_register_state.DefineSafepoint();
           __ SmiUntag(kReturnRegister0);
           __ Move(result, kReturnRegister0);
         }
@@ -332,6 +350,30 @@ void MaglevAssembler::ToBoolean(Register value, ZoneLabelRef is_true,
   if (!fallthrough_when_true) {
     jmp(*is_true);
   }
+}
+
+void MaglevAssembler::TruncateDoubleToInt32(Register dst, DoubleRegister src) {
+  ZoneLabelRef done(this);
+
+  Cvttsd2siq(dst, src);
+  // Check whether the Cvt overflowed.
+  cmpq(dst, Immediate(1));
+  JumpToDeferredIf(
+      overflow,
+      [](MaglevAssembler* masm, DoubleRegister src, Register dst,
+         ZoneLabelRef done) {
+        // Push the double register onto the stack as an input argument.
+        __ AllocateStackSpace(kDoubleSize);
+        __ Movsd(MemOperand(rsp, 0), src);
+        __ CallBuiltin(Builtin::kDoubleToI);
+        // DoubleToI sets the result on the stack, pop the result off the stack.
+        // Avoid using `pop` to not mix implicit and explicit rsp updates.
+        __ movl(dst, MemOperand(rsp, 0));
+        __ addq(rsp, Immediate(kDoubleSize));
+        __ jmp(*done);
+      },
+      src, dst, done);
+  bind(*done);
 }
 
 }  // namespace maglev

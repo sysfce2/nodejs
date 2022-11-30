@@ -338,6 +338,11 @@ class MarkCompactCollector final : public CollectorBase {
     return static_cast<MarkCompactCollector*>(collector);
   }
 
+  // Callback function for telling whether the object *p is an unmarked
+  // heap object.
+  static bool IsUnmarkedHeapObject(Heap* heap, FullObjectSlot p);
+  static bool IsUnmarkedSharedHeapObject(Heap* heap, FullObjectSlot p);
+
   std::pair<size_t, size_t> ProcessMarkingWorklist(
       size_t bytes_to_process) final;
 
@@ -532,10 +537,6 @@ class MarkCompactCollector final : public CollectorBase {
   // Perform Wrapper Tracing if in use.
   void PerformWrapperTracing();
 
-  // Callback function for telling whether the object *p is an unmarked
-  // heap object.
-  static bool IsUnmarkedHeapObject(Heap* heap, FullObjectSlot p);
-
   // Retain dying maps for `v8_flags.retain_maps_for_n_gc` garbage collections
   // to increase chances of reusing of map transition tree in future.
   void RetainMaps();
@@ -706,6 +707,9 @@ class MinorMarkCompactCollector final : public CollectorBase {
   void Finish() final;
 
   void VisitObject(HeapObject obj) final;
+
+  // Perform Wrapper Tracing if in use.
+  void PerformWrapperTracing();
 
  private:
   class RootMarkingVisitor;

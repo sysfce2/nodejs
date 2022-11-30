@@ -285,8 +285,7 @@ void Deserializer<IsolateT>::WeakenDescriptorArrays() {
 template <typename IsolateT>
 void Deserializer<IsolateT>::LogScriptEvents(Script script) {
   DisallowGarbageCollection no_gc;
-  LOG(isolate(),
-      ScriptEvent(V8FileLogger::ScriptEventType::kDeserialize, script.id()));
+  LOG(isolate(), ScriptEvent(ScriptEventType::kDeserialize, script.id()));
   LOG(isolate(), ScriptDetails(script));
 }
 
@@ -399,6 +398,7 @@ void Deserializer<Isolate>::PostProcessNewJSReceiver(Map map,
     auto buffer = JSArrayBuffer::cast(*obj);
     uint32_t store_index = buffer.GetBackingStoreRefForDeserialization();
     if (store_index == kEmptyBackingStoreRefSentinel) {
+      buffer.set_extension(nullptr);
       buffer.set_backing_store(main_thread_isolate(),
                                EmptyBackingStoreBuffer());
     } else {

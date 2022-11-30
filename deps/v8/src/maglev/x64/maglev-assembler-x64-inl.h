@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifndef V8_MAGLEV_MAGLEV_ASSEMBLER_INL_H_
-#define V8_MAGLEV_MAGLEV_ASSEMBLER_INL_H_
+#ifndef V8_MAGLEV_X64_MAGLEV_ASSEMBLER_X64_INL_H_
+#define V8_MAGLEV_X64_MAGLEV_ASSEMBLER_X64_INL_H_
 
 #include <tuple>
 #include <type_traits>
@@ -74,6 +74,20 @@ Register MaglevAssembler::FromAnyToRegister(const Input& input,
   }
 }
 
+inline MemOperand MaglevAssembler::GetStackSlot(
+    const compiler::AllocatedOperand& operand) {
+  return MemOperand(rbp, GetFramePointerOffsetForStackSlot(operand));
+}
+
+inline MemOperand MaglevAssembler::ToMemOperand(
+    const compiler::InstructionOperand& operand) {
+  return GetStackSlot(compiler::AllocatedOperand::cast(operand));
+}
+
+inline MemOperand MaglevAssembler::ToMemOperand(const ValueLocation& location) {
+  return ToMemOperand(location.operand());
+}
+
 inline void MaglevAssembler::DefineLazyDeoptPoint(LazyDeoptInfo* info) {
   info->set_deopting_call_return_pc(pc_offset_for_safepoint());
   code_gen_state()->PushLazyDeopt(info);
@@ -91,6 +105,72 @@ inline void MaglevAssembler::DefineExceptionHandlerAndLazyDeoptPoint(
     NodeBase* node) {
   DefineExceptionHandlerPoint(node);
   DefineLazyDeoptPoint(node->lazy_deopt_info());
+}
+
+inline void MaglevAssembler::LoadBoundedSizeFromObject(Register result,
+                                                       Register object,
+                                                       int offset) {
+  movq(result, FieldOperand(object, offset));
+#ifdef V8_ENABLE_SANDBOX
+  shrq(result, Immediate(kBoundedSizeShift));
+#endif  // V8_ENABLE_SANDBOX
+}
+
+inline void MaglevAssembler::LoadExternalPointerField(Register result,
+                                                      Operand operand) {
+#ifdef V8_ENABLE_SANDBOX
+  LoadSandboxedPointerField(result, operand);
+#else
+  movq(result, operand);
+#endif
+}
+
+inline void MaglevAssembler::LoadSignedField(Register result, Operand operand,
+                                             int size) {
+  if (size == 1) {
+    movsxbl(result, operand);
+  } else if (size == 2) {
+    movsxwl(result, operand);
+  } else {
+    DCHECK_EQ(size, 4);
+    movl(result, operand);
+  }
+}
+
+inline void MaglevAssembler::LoadUnsignedField(Register result, Operand operand,
+                                               int size) {
+  if (size == 1) {
+    movzxbl(result, operand);
+  } else if (size == 2) {
+    movzxwl(result, operand);
+  } else {
+    DCHECK_EQ(size, 4);
+    movl(result, operand);
+  }
+}
+
+inline void MaglevAssembler::StoreField(Operand operand, Register value,
+                                        int size) {
+  DCHECK(size == 1 || size == 2 || size == 4);
+  if (size == 1) {
+    movb(operand, value);
+  } else if (size == 2) {
+    movw(operand, value);
+  } else {
+    DCHECK_EQ(size, 4);
+    movl(operand, value);
+  }
+}
+
+inline void MaglevAssembler::ReverseByteOrder(Register value, int size) {
+  if (size == 2) {
+    bswapl(value);
+    sarl(value, Immediate(16));
+  } else if (size == 4) {
+    bswapl(value);
+  } else {
+    DCHECK_EQ(size, 1);
+  }
 }
 
 // ---
@@ -309,4 +389,4 @@ inline void MaglevAssembler::EmitEagerDeoptIf(Condition cond,
 }  // namespace internal
 }  // namespace v8
 
-#endif  // V8_MAGLEV_MAGLEV_ASSEMBLER_INL_H_
+#endif  // V8_MAGLEV_X64_MAGLEV_ASSEMBLER_X64_INL_H_
