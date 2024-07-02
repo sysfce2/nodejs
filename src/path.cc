@@ -7,12 +7,12 @@
 namespace node {
 
 #ifdef _WIN32
-bool IsPathSeparator(const char c) noexcept {
-  return c == kPathSeparator || c == '/';
+constexpr bool IsPathSeparator(char c) noexcept {
+  return c == '\\' || c == '/';
 }
 #else   // POSIX
-bool IsPathSeparator(const char c) noexcept {
-  return c == kPathSeparator;
+constexpr bool IsPathSeparator(char c) noexcept {
+  return c == '/';
 }
 #endif  // _WIN32
 
@@ -311,6 +311,19 @@ void ToNamespacedPath(Environment* env, BufferValue* path) {
   path->AllocateSufficientStorage(new_length + 1);
   path->SetLength(new_length);
   memcpy(path->out(), resolved_path.c_str(), resolved_path.size() + 1);
+#endif
+}
+
+// Reverse the logic applied by path.toNamespacedPath() to create a
+// namespace-prefixed path.
+void FromNamespacedPath(std::string* path) {
+#ifdef _WIN32
+  if (path->starts_with("\\\\?\\UNC\\")) {
+    *path = path->substr(8);
+    path->insert(0, "\\\\");
+  } else if (path->starts_with("\\\\?\\")) {
+    *path = path->substr(4);
+  }
 #endif
 }
 
