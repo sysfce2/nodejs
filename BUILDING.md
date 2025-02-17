@@ -140,7 +140,7 @@ platforms. This is true regardless of entries in the table below.
     Windows binary (`node.exe`) in WSL will not work without workarounds such as
     stdio redirection.
 
-[^4]: Our macOS x64 Binaries are compiled with 11.0 as a target. Xcode 13 is
+[^4]: Our macOS Binaries are compiled with 11.0 as a target. Xcode 16 is
     required to compile.
 
 <!--lint enable final-definition-->
@@ -153,7 +153,7 @@ Depending on the host platform, the selection of toolchains may vary.
 | ---------------- | -------------------------------------------------------------- |
 | Linux            | GCC >= 12.2                                                    |
 | Windows          | Visual Studio >= 2022 with the Windows 10 SDK on a 64-bit host |
-| macOS            | Xcode >= 13 (Apple LLVM >= 12)                                 |
+| macOS            | Xcode >= 16.1 (Apple LLVM >= 17)                               |
 
 ### Official binary platforms and toolchains
 
@@ -163,7 +163,7 @@ Binaries at <https://nodejs.org/download/release/> are produced on:
 | ----------------------- | ------------------------------------------------------------------------------------------------------------- |
 | aix-ppc64               | AIX 7.2 TL04 on PPC64BE with GCC 12[^5]                                                                       |
 | darwin-x64              | macOS 13, Xcode 16 with -mmacosx-version-min=11.0                                                             |
-| darwin-arm64 (and .pkg) | macOS 13 (arm64), Xcode 14 with -mmacosx-version-min=11.0                                                     |
+| darwin-arm64 (and .pkg) | macOS 13 (arm64), Xcode 16 with -mmacosx-version-min=11.0                                                     |
 | linux-arm64             | RHEL 8 with gcc-toolset-12[^6]                                                                                |
 | linux-armv7l            | Cross-compiled on RHEL 9 x64 with a [custom GCC toolchain](https://github.com/rvagg/rpi-newer-crosstools)[^7] |
 | linux-ppc64le           | RHEL 8 with gcc-toolset-12[^6]                                                                                |
@@ -241,7 +241,7 @@ Consult previous versions of this document for older versions of Node.js:
 
 Installation via Linux package manager can be achieved with:
 
-* Ubuntu, Debian: `sudo apt-get install python3 g++ make python3-pip`
+* Ubuntu, Debian: `sudo apt-get install python3 g++-12 gcc-12 make python3-pip`
 * Fedora: `sudo dnf install python3 gcc-c++ make python3-pip`
 * CentOS and RHEL: `sudo yum install python3 gcc-c++ make python3-pip`
 * OpenSUSE: `sudo zypper install python3 gcc-c++ make python3-pip`
@@ -269,6 +269,7 @@ fail.
 To build Node.js:
 
 ```bash
+export CXX=g++-12
 ./configure
 make -j4
 ```
@@ -570,6 +571,24 @@ On macOS:
 brew install ccache            # see https://brew.sh
 export CC="ccache cc"          # add to ~/.zshrc or other shell config file
 export CXX="ccache c++"        # add to ~/.zshrc or other shell config file
+```
+
+On Windows:
+
+Tips: follow <https://github.com/ccache/ccache/wiki/MS-Visual-Studio>, and you
+should notice that obj file will be bigger the normal one.
+
+First, install ccache, assume ccache install to c:\ccache, copy
+c:\ccache\ccache.exe to c:\ccache\cl.exe with this command
+
+```powershell
+cp c:\ccache\ccache.exe c:\ccache\cl.exe
+```
+
+When building Node.js provide a path to your ccache via the option
+
+```powershell
+.\vcbuild.bat ccache c:\ccache\
 ```
 
 This will allow for near-instantaneous rebuilds when switching branches back

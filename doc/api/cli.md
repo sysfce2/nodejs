@@ -174,18 +174,17 @@ node:internal/child_process:388
                            ^
 Error: Access to this API has been restricted
     at ChildProcess.spawn (node:internal/child_process:388:28)
-    at Object.spawn (node:child_process:723:9)
-    at Object.<anonymous> (/home/index.js:3:14)
-    at Module._compile (node:internal/modules/cjs/loader:1120:14)
-    at Module._extensions..js (node:internal/modules/cjs/loader:1174:10)
-    at Module.load (node:internal/modules/cjs/loader:998:32)
-    at Module._load (node:internal/modules/cjs/loader:839:12)
-    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:81:12)
     at node:internal/main/run_main_module:17:47 {
   code: 'ERR_ACCESS_DENIED',
   permission: 'ChildProcess'
 }
 ```
+
+Unlike `child_process.spawn`, the `child_process.fork` API copies the execution
+arguments from the parent process. This means that if you start Node.js with the
+Permission Model enabled and include the `--allow-child-process` flag, calling
+`child_process.fork()` will propagate all Permission Model flags to the child
+process.
 
 ### `--allow-fs-read`
 
@@ -578,15 +577,28 @@ Disable the `Object.prototype.__proto__` property. If `mode` is `delete`, the
 property is removed entirely. If `mode` is `throw`, accesses to the
 property throw an exception with the code `ERR_PROTO_ACCESS`.
 
-### `--disable-warning=code-or-type`
+### `--disable-sigusr1`
 
-> Stability: 1.1 - Active development
+<!-- YAML
+added:
+  - v23.7.0
+  - v22.14.0
+-->
+
+> Stability: 1.2 - Release candidate
+
+Disable the ability of starting a debugging session by sending a
+`SIGUSR1` signal to the process.
+
+### `--disable-warning=code-or-type`
 
 <!-- YAML
 added:
   - v21.3.0
   - v20.11.0
 -->
+
+> Stability: 1.1 - Active development
 
 Disable specific process warnings by `code` or `type`.
 
@@ -794,12 +806,12 @@ node --entry-url 'data:text/javascript,console.log("Hello")'
 added: v22.9.0
 -->
 
+> Stability: 1.1 - Active development
+
 Behavior is the same as [`--env-file`][], but an error is not thrown if the file
 does not exist.
 
 ### `--env-file=config`
-
-> Stability: 1.1 - Active development
 
 <!-- YAML
 added: v20.6.0
@@ -810,6 +822,8 @@ changes:
     pr-url: https://github.com/nodejs/node/pull/51289
     description: Add support to multi-line values.
 -->
+
+> Stability: 1.1 - Active development
 
 Loads environment variables from a file relative to the current directory,
 making them available to applications on `process.env`. The [environment
@@ -933,6 +947,13 @@ Previously gated the entire `import.meta.resolve` feature.
 <!-- YAML
 added: v8.8.0
 changes:
+  - version:
+    - v23.6.1
+    - v22.13.1
+    - v20.18.2
+    pr-url: https://github.com/nodejs-private/node-private/pull/629
+    description: Using this feature with the permission model enabled requires
+                 passing `--allow-worker`.
   - version: v12.11.1
     pr-url: https://github.com/nodejs/node/pull/29752
     description: This flag was renamed from `--loader` to
@@ -945,6 +966,8 @@ changes:
 
 Specify the `module` containing exported [module customization hooks][].
 `module` may be any string accepted as an [`import` specifier][].
+
+This feature requires `--allow-worker` if used with the [Permission Model][].
 
 ### `--experimental-network-inspection`
 
@@ -973,7 +996,7 @@ top-level awaits, and print their location to help users find them.
 ### `--experimental-quic`
 
 <!--
-added: REPLACEME
+added: v23.8.0
 -->
 
 Enables the experimental `node:quic` built-in module.
@@ -1045,11 +1068,21 @@ report is not generated. See the documentation on
 added:
   - v22.3.0
   - v20.18.0
+changes:
+  - version:
+    - v23.6.1
+    - v22.13.1
+    - v20.18.2
+    pr-url: https://github.com/nodejs-private/node-private/pull/629
+    description: Using this feature with the permission model enabled requires
+                 passing `--allow-worker`.
 -->
 
 > Stability: 1.0 - Early development
 
 Enable module mocking in the test runner.
+
+This feature requires `--allow-worker` if used with the [Permission Model][].
 
 ### `--experimental-transform-types`
 
@@ -1380,7 +1413,8 @@ Node.js will try to detect the syntax with the following steps:
 1. Run the input as CommonJS.
 2. If step 1 fails, run the input as an ES module.
 3. If step 2 fails with a SyntaxError, strip the types.
-4. If step 3 fails with an error code [`ERR_INVALID_TYPESCRIPT_SYNTAX`][],
+4. If step 3 fails with an error code [`ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`][]
+   or [`ERR_INVALID_TYPESCRIPT_SYNTAX`][],
    throw the error from step 2, including the TypeScript error in the message,
    else run as CommonJS.
 5. If step 4 fails, run the input as an ES module.
@@ -1459,6 +1493,7 @@ added: v7.6.0
 
 Set the `host:port` to be used when the inspector is activated.
 Useful when activating the inspector by sending the `SIGUSR1` signal.
+Except when [`--disable-sigusr1`][] is passed.
 
 Default host is `127.0.0.1`. If port `0` is specified,
 a random available port will be used.
@@ -2830,6 +2865,57 @@ The following values are valid for `mode`:
 * `silent`: If supported by the OS, mapping will be attempted. Failure to map
   will be ignored and will not be reported.
 
+### `--use-system-ca`
+
+Node.js uses the trusted CA certificates present in the system store along with
+the `--use-bundled-ca` option and the `NODE_EXTRA_CA_CERTS` environment variable.
+On platforms other than Windows and macOS, this loads certificates from the directory
+and file trusted by OpenSSL, similar to `--use-openssl-ca`, with the difference being
+that it caches the certificates after first load.
+
+On Windows and macOS, the certificate trust policy is planned to follow
+[Chromium's policy for locally trusted certificates][]:
+
+On macOS, the following settings are respected:
+
+* Default and System Keychains
+  * Trust:
+    * Any certificate where the “When using this certificate” flag is set to “Always Trust” or
+    * Any certificate where the “Secure Sockets Layer (SSL)” flag is set to “Always Trust.”
+  * Distrust:
+    * Any certificate where the “When using this certificate” flag is set to “Never Trust” or
+    * Any certificate where the “Secure Sockets Layer (SSL)” flag is set to “Never Trust.”
+
+On Windows, the following settings are respected (unlike Chromium's policy, distrust
+and intermediate CA are not currently supported):
+
+* Local Machine (accessed via `certlm.msc`)
+  * Trust:
+    * Trusted Root Certification Authorities
+    * Trusted People
+    * Enterprise Trust -> Enterprise -> Trusted Root Certification Authorities
+    * Enterprise Trust -> Enterprise -> Trusted People
+    * Enterprise Trust -> Group Policy -> Trusted Root Certification Authorities
+    * Enterprise Trust -> Group Policy -> Trusted People
+* Current User (accessed via `certmgr.msc`)
+  * Trust:
+    * Trusted Root Certification Authorities
+    * Enterprise Trust -> Group Policy -> Trusted Root Certification Authorities
+
+On Windows and macOS, Node.js would check that the user settings for the certificates
+do not forbid them for TLS server authentication before using them.
+
+On other systems, Node.js loads certificates from the default certificate file
+(typically `/etc/ssl/cert.pem`) and default certificate directory (typically
+`/etc/ssl/certs`) that the version of OpenSSL that Node.js links to respects.
+This typically works with the convention on major Linux distributions and other
+Unix-like systems. If the overriding OpenSSL environment variables
+(typically `SSL_CERT_FILE` and `SSL_CERT_DIR`, depending on the configuration
+of the OpenSSL that Node.js links to) are set, the specified paths will be used to load
+certificates instead. These environment variables can be used as workarounds
+if the conventional paths used by the version of OpenSSL Node.js links to are
+not consistent with the system configuration that the users have for some reason.
+
 ### `--v8-options`
 
 <!-- YAML
@@ -3100,6 +3186,7 @@ one is included in the list below.
 * `--conditions`, `-C`
 * `--diagnostic-dir`
 * `--disable-proto`
+* `--disable-sigusr1`
 * `--disable-warning`
 * `--disable-wasm-trap-handler`
 * `--dns-result-order`
@@ -3228,6 +3315,7 @@ one is included in the list below.
 * `--use-bundled-ca`
 * `--use-largepages`
 * `--use-openssl-ca`
+* `--use-system-ca`
 * `--v8-pool-size`
 * `--watch-path`
 * `--watch-preserve-output`
@@ -3378,11 +3466,6 @@ easier to instrument applications that call the `child_process.spawn()` family
 of functions. `NODE_V8_COVERAGE` can be set to an empty string, to prevent
 propagation.
 
-### `NO_COLOR=<any>`
-
-[`NO_COLOR`][]  is an alias for `NODE_DISABLE_COLORS`. The value of the
-environment variable is arbitrary.
-
 #### Coverage output
 
 Coverage is output as an array of [ScriptCoverage][] objects on the top-level
@@ -3448,6 +3531,11 @@ and the line lengths of the source file (in the key `lineLengths`).
 }
 ```
 
+### `NO_COLOR=<any>`
+
+[`NO_COLOR`][]  is an alias for `NODE_DISABLE_COLORS`. The value of the
+environment variable is arbitrary.
+
 ### `OPENSSL_CONF=file`
 
 <!-- YAML
@@ -3467,7 +3555,8 @@ variable is ignored.
 added: v7.7.0
 -->
 
-If `--use-openssl-ca` is enabled, this overrides and sets OpenSSL's directory
+If `--use-openssl-ca` is enabled, or if `--use-system-ca` is enabled on
+platforms other than macOS and Windows, this overrides and sets OpenSSL's directory
 containing trusted certificates.
 
 Be aware that unless the child environment is explicitly set, this environment
@@ -3480,7 +3569,8 @@ may cause them to trust the same CAs as node.
 added: v7.7.0
 -->
 
-If `--use-openssl-ca` is enabled, this overrides and sets OpenSSL's file
+If `--use-openssl-ca` is enabled, or if `--use-system-ca` is enabled on
+platforms other than macOS and Windows, this overrides and sets OpenSSL's file
 containing trusted certificates.
 
 Be aware that unless the child environment is explicitly set, this environment
@@ -3646,6 +3736,7 @@ node --stack-trace-limit=12 -p -e "Error.stackTraceLimit" # prints 12
 
 [#42511]: https://github.com/nodejs/node/issues/42511
 [Chrome DevTools Protocol]: https://chromedevtools.github.io/devtools-protocol/
+[Chromium's policy for locally trusted certificates]: https://chromium.googlesource.com/chromium/src/+/main/net/data/ssl/chrome_root_store/faq.md#does-the-chrome-certificate-verifier-consider-local-trust-decisions
 [CommonJS]: modules.md
 [CommonJS module]: modules.md
 [DEP0025 warning]: deprecations.md#dep0025-requirenodesys
@@ -3678,6 +3769,7 @@ node --stack-trace-limit=12 -p -e "Error.stackTraceLimit" # prints 12
 [`--build-snapshot`]: #--build-snapshot
 [`--cpu-prof-dir`]: #--cpu-prof-dir
 [`--diagnostic-dir`]: #--diagnostic-dirdirectory
+[`--disable-sigusr1`]: #--disable-sigusr1
 [`--env-file-if-exists`]: #--env-file-if-existsconfig
 [`--env-file`]: #--env-fileconfig
 [`--experimental-addon-modules`]: #--experimental-addon-modules
@@ -3695,6 +3787,7 @@ node --stack-trace-limit=12 -p -e "Error.stackTraceLimit" # prints 12
 [`Buffer`]: buffer.md#class-buffer
 [`CRYPTO_secure_malloc_init`]: https://www.openssl.org/docs/man3.0/man3/CRYPTO_secure_malloc_init.html
 [`ERR_INVALID_TYPESCRIPT_SYNTAX`]: errors.md#err_invalid_typescript_syntax
+[`ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`]: errors.md#err_unsupported_typescript_syntax
 [`NODE_OPTIONS`]: #node_optionsoptions
 [`NO_COLOR`]: https://no-color.org
 [`SlowBuffer`]: buffer.md#class-slowbuffer

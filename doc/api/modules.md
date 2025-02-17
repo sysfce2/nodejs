@@ -208,7 +208,7 @@ regarding which files are parsed as ECMAScript modules.
   3. The file has a `.js` extension, the closest `package.json` does not contain
      `"type": "commonjs"`, and the module contains ES module syntax.
 
-If the ES Module being loaded meet the requirements, `require()` can load it and
+If the ES Module being loaded meets the requirements, `require()` can load it and
 return the module namespace object. In this case it is similar to dynamic
 `import()` but is run synchronously and returns the name space object
 directly.
@@ -217,7 +217,7 @@ With the following ES Modules:
 
 ```mjs
 // distance.mjs
-export function distance(a, b) { return (b.x - a.x) ** 2 + (b.y - a.y) ** 2; }
+export function distance(a, b) { return Math.sqrt((b.x - a.x) ** 2 + (b.y - a.y) ** 2); }
 ```
 
 ```mjs
@@ -253,7 +253,7 @@ This property is experimental and can change in the future. It should only be us
 by tools converting ES modules into CommonJS modules, following existing ecosystem
 conventions. Code authored directly in CommonJS should avoid depending on it.
 
-When a ES Module contains both named exports and a default export, the result returned by `require()`
+When an ES Module contains both named exports and a default export, the result returned by `require()`
 is the module namespace object, which places the default export in the `.default` property, similar to
 the results returned by `import()`.
 To customize what should be returned by `require(esm)` directly, the ES Module can export the
@@ -269,7 +269,7 @@ export default class Point {
 
 // `distance` is lost to CommonJS consumers of this module, unless it's
 // added to `Point` as a static property.
-export function distance(a, b) { return (b.x - a.x) ** 2 + (b.y - a.y) ** 2; }
+export function distance(a, b) { return Math.sqrt((b.x - a.x) ** 2 + (b.y - a.y) ** 2); }
 export { Point as 'module.exports' }
 ```
 
@@ -293,7 +293,7 @@ named exports attached to it as properties. For example with the example above,
 <!-- eslint-disable @stylistic/js/semi -->
 
 ```mjs
-export function distance(a, b) { return (b.x - a.x) ** 2 + (b.y - a.y) ** 2; }
+export function distance(a, b) { return Math.sqrt((b.x - a.x) ** 2 + (b.y - a.y) ** 2); }
 
 export default class Point {
   constructor(x, y) { this.x = x; this.y = y; }
@@ -373,7 +373,7 @@ LOAD_AS_FILE(X)
       1. MAYBE_DETECT_AND_LOAD(X.js)
     c. If the SCOPE/package.json contains "type" field,
       1. If the "type" field is "module", load X.js as an ECMAScript module. STOP.
-      2. If the "type" field is "commonjs", load X.js as an CommonJS module. STOP.
+      2. If the "type" field is "commonjs", load X.js as a CommonJS module. STOP.
     d. MAYBE_DETECT_AND_LOAD(X.js)
 3. If X.json is a file, load X.json to a JavaScript Object. STOP
 4. If X.node is a file, load X.node as binary addon. STOP
@@ -384,7 +384,7 @@ LOAD_INDEX(X)
     b. If no scope was found, load X/index.js as a CommonJS module. STOP.
     c. If the SCOPE/package.json contains "type" field,
       1. If the "type" field is "module", load X/index.js as an ECMAScript module. STOP.
-      2. Else, load X/index.js as an CommonJS module. STOP.
+      2. Else, load X/index.js as a CommonJS module. STOP.
 2. If X/index.json is a file, parse X/index.json to a JavaScript object. STOP
 3. If X/index.node is a file, load X/index.node as binary addon. STOP
 
@@ -516,9 +516,11 @@ by that name.
 
 Some built-in modules are always preferentially loaded if their identifier is
 passed to `require()`. For instance, `require('http')` will always
-return the built-in HTTP module, even if there is a file by that name. The list
-of built-in modules that can be loaded without using the `node:` prefix is exposed
-in [`module.builtinModules`][], listed without the prefix.
+return the built-in HTTP module, even if there is a file by that name.
+
+The list of all the built-in modules can be retrieved from [`module.builtinModules`][].
+The modules being all listed without the `node:` prefix, except those that mandate such
+prefix (as explained in the next section).
 
 ### Built-in modules with mandatory `node:` prefix
 

@@ -53,19 +53,19 @@ void DebugOptions::CheckOptions(std::vector<std::string>* errors,
                       "`node --inspect-brk` instead.");
   }
 
-  using std::string_view_literals::operator""sv;
-  const std::vector<std::string_view> destinations =
-      SplitString(inspect_publish_uid_string, ","sv);
+  using std::operator""sv;
+  auto entries = std::views::split(inspect_publish_uid_string, ","sv);
   inspect_publish_uid.console = false;
   inspect_publish_uid.http = false;
-  for (const std::string_view destination : destinations) {
+  for (const auto& entry : entries) {
+    std::string_view destination(entry.data(), entry.size());
     if (destination == "stderr"sv) {
       inspect_publish_uid.console = true;
     } else if (destination == "http"sv) {
       inspect_publish_uid.http = true;
     } else {
-      errors->push_back("--inspect-publish-uid destination can be "
-                        "stderr or http");
+      errors->emplace_back("--inspect-publish-uid destination can be "
+                           "stderr or http");
     }
   }
 }
@@ -386,6 +386,11 @@ EnvironmentOptionsParser::EnvironmentOptionsParser() {
             " (default: current working directory)",
             &EnvironmentOptions::diagnostic_dir,
             kAllowedInEnvvar);
+  AddOption("--disable-sigusr1",
+            "Disable inspector thread to be listening for SIGUSR1 signal",
+            &EnvironmentOptions::disable_sigusr1,
+            kAllowedInEnvvar,
+            false);
   AddOption("--dns-result-order",
             "set default value of verbatim in dns.lookup. Options are "
             "'ipv4first' (IPv4 addresses are placed before IPv6 addresses) "
@@ -1114,6 +1119,10 @@ PerProcessOptionsParser::PerProcessOptionsParser(
 #endif
             ,
             &PerProcessOptions::use_openssl_ca,
+            kAllowedInEnvvar);
+  AddOption("--use-system-ca",
+            "use system's CA store",
+            &PerProcessOptions::use_system_ca,
             kAllowedInEnvvar);
   AddOption("--use-bundled-ca",
             "use bundled CA store"

@@ -25,10 +25,10 @@ class Foo {
 class Foo2 {
   refCalled = 0;
   unrefCalled = 0;
-  [Symbol.for('node:ref')]() {
+  [Symbol.for('nodejs.ref')]() {
     this.refCalled++;
   }
-  [Symbol.for('node:unref')]() {
+  [Symbol.for('nodejs.unref')]() {
     this.unrefCalled++;
   }
 }
