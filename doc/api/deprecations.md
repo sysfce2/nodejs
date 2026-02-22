@@ -792,7 +792,9 @@ The [`domain`][] module is deprecated and should not be used.
 
 <!-- YAML
 changes:
-  - version: v25.4.0
+  - version:
+     - v25.4.0
+     - v24.14.0
     pr-url: https://github.com/nodejs/node/pull/60214
     description: Deprecation revoked.
   - version:

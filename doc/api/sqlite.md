@@ -107,7 +107,9 @@ exposed by this class execute synchronously.
 <!-- YAML
 added: v22.5.0
 changes:
-  - version: v25.5.0
+  - version:
+     - v25.5.0
+     - v24.14.0
     pr-url: https://github.com/nodejs/node/pull/61266
     description: Enable `defensive` by default.
   - version:
